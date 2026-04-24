@@ -1,0 +1,23 @@
+# Fichiers temporaires R
+.Rproj.user/
+.Rhistory
+.RData
+.RDataTmp
+.RDataTmp1
+
+# Fichiers générés
+*.html
+*.Rproj
+
+# Shapefiles volumineux
+poly0/
+poly1/
+poly2/
+WDPA_Apr2026_Public.gdb/
+
+# Fichiers régénérés
+protected_areas_spain.rds
+
+# Dossiers inutiles
+useless/
+rsconnect/
