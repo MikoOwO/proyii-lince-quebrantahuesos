@@ -1,6 +1,6 @@
 ---
 title: "proy"
-author: "Aleksei Cheremisinov"
+author: "Proyii"
 date: "2026-03-05"
 output: 
   html_document:
@@ -39,10 +39,8 @@ library(scales)
 sf_use_s2(FALSE)
 
 Lynx  <- read.csv("Lynx.csv",              sep = "\t", quote = "")
-```
-
-```{r}
 Quebr <- read.csv("Quebrantahuesos.csv",   sep = "\t", quote = "")
+
 ```
 
 ## 4. Limpieza de datos
@@ -51,306 +49,70 @@ En esta sección se realiza la limpieza de los datos obtenidos de GBIF para amba
 
 ### 4.1 Limpieza del lince ibérico
 antes de todo, eliminamos los duplicados por gbif ID
-```{r}
-nrow(Lynx)
-lynx_clean <- Lynx |> distinct(gbifID, .keep_all = TRUE)
-nrow(lynx_clean)
-
-```
-
-
-En primer lugar, se seleccionan únicamente las variables necesarias para el análisis: coordenadas geográficas, fecha del avistamiento, variables temporales y algunos campos descriptivos útiles para interpretar los registros.
 
 ```{r}
-
-lynx_clean <- lynx_clean[, c(
-  "decimalLatitude", "decimalLongitude",
-  "eventDate", "year", "month", "countryCode",
-  "individualCount", "stateProvince", "locality"
-)]
-
-lynx_clean <- lynx_clean %>% filter(countryCode == "ES")
-
-```
-
-Tras esta primera reducción, se eliminan muchas columnas taxonómicas y administrativas que no aportan directamente al análisis principal, dejando una tabla más manejable y centrada en la información espacial y temporal.
-
-A continuación, se eliminan las observaciones sin latitud o longitud, ya que no pueden utilizarse ni en mapas ni en análisis espaciales.
-Aunque nos dice que no hay ninguna na, lo eliminamos igualmente por si acaso.
-
-
-Después, se revisa la información temporal. Observamos que hay 807 avistamientos sin year, pero ninguno sin eventDate, entonces podemos sacar el año a partir de eventDate.
-
-```{r}
-sum(is.na(lynx_clean$decimalLatitude) & is.na(lynx_clean$decimalLongitude))
-lynx_clean <- lynx_clean[
-  !is.na(lynx_clean$decimalLatitude) &
-  !is.na(lynx_clean$decimalLongitude),
-]
-
-nrow(lynx_clean)
-
-lynx_clean <- lynx_clean %>%
-  filter(
-    decimalLatitude >= 36.0, decimalLatitude <= 43.9,
-    decimalLongitude >= -9.5, decimalLongitude <= 3.3
-  )
-nrow(lynx_clean)
-```
-
-Hemos eliminado 802 filas sin coordenadas.
-
-
-
-```{r}
-library(stringr)
-sum(is.na(lynx_clean$year))
-sum(is.na(lynx_clean$eventDate))
-sum(str_trim(lynx_clean$eventDate) == "")
-
-```
-Observamos que no hay ningun NA en eventDate, sin embargo hay algunos vacíos, vamos a eliminarlos.
-```{r}
-nrow(lynx_clean)
-#pasar a na
-lynx_clean <- lynx_clean |>
-  mutate(eventDate = na_if(str_trim(eventDate), ""))
-#eliminar na
-lynx_clean <- lynx_clean |>
-  filter(!is.na(eventDate))
-
-nrow(lynx_clean)
-```
-
-sacamos año, mes y día a partir de eventDate (si es posible).
-
-
-clasificamos y parseamos
-
-pero hay dos fechas que dan muchas problemas, así que lo sobreescribimos a mano.
-```{r}
-
-# Corrections manuelles de formats problématiques
-lynx_clean <- lynx_clean %>%
-  mutate(
-    eventDate = if_else(eventDate == "1955-02", "1955-02-01", eventDate),
-    eventDate = if_else(eventDate == "1988-11", "1988-11-01", eventDate)
-  )
-
-# Conversion en colonnes année-mois-jour
-lynx_clean2 <- lynx_clean %>%
-  mutate(
-    eventDate = as.character(eventDate),
-    eventDate = stri_replace_all_regex(eventDate, "\\p{Pd}", "-"),
-    eventDate = na_if(str_trim(eventDate), "")
-  ) %>%
-  mutate(
-    tipo_fecha = case_when(
-      str_detect(eventDate, "^\\d{4}$") ~ "solo_año",
-      str_detect(eventDate, "^\\d{4}-\\d{2}$") ~ "año_mes",
-      str_detect(eventDate, "^\\d{4}/\\d{4}$") ~ "intervalo_años",
-      str_detect(eventDate, "Z$") ~ "iso8601_Z",
-      str_detect(eventDate, "T\\d{2}:\\d{2}") ~ "iso8601",
-      str_detect(eventDate, "^\\d{4}-\\d{2}-\\d{2}$") ~ "fecha_simple",
-      str_detect(eventDate, "/") ~ "intervalo",
-      TRUE ~ "otro"
-    )
-  ) %>%
-  mutate(
-    fecha_parseada = case_when(
-      tipo_fecha == "solo_año" ~ ymd(paste0(eventDate, "-01-01")),
-      tipo_fecha == "año_mes" ~ ymd(paste0(eventDate, "-01")),
-      tipo_fecha == "intervalo_años" ~
-        ymd(paste0(str_extract(eventDate, "^\\d{4}"), "-01-01")),
-      tipo_fecha %in% c("iso8601", "iso8601_Z") ~
-        coalesce(
-          ymd_hms(eventDate, tz = "UTC", quiet = TRUE),
-          ymd_hm(eventDate, tz = "UTC", quiet = TRUE)
-        ),
-      tipo_fecha == "fecha_simple" ~ ymd(eventDate),
-      tipo_fecha == "intervalo" ~
-        coalesce(
-          ymd_hms(str_extract(eventDate, "^[^/]+"), quiet = TRUE),
-          ymd_hm(str_extract(eventDate, "^[^/]+"), quiet = TRUE),
-          ymd(str_extract(eventDate, "^[^/]+"), quiet = TRUE)
-        ),
-      TRUE ~ NA_Date_
-    )
-  ) %>%
-  mutate(
-    año = year(fecha_parseada),
-    mes = month(fecha_parseada),
-    dia = day(fecha_parseada)
-  )
-
-# Vérification
-lynx_clean2 %>% filter(is.na(fecha_parseada)) %>% count()
-
-```
-
-La parte general, convertir eventDate en columnas año, mes y día, si falta algún valor (que no sea año), lo dejamos en 01
-
-recuento de los tipos de fechas
-```{r}
-lynx_clean2 %>% count(tipo_fecha)
-
-```
-Aseguramos que están todas parseadas.
-```{r}
-library(dplyr)
-
-lynx_clean2 %>%
-  filter(is.na(fecha_parseada)) %>%
-  select(eventDate, tipo_fecha) %>%
-  distinct()
-
-lynx_clean2 %>% filter(is.na(fecha_parseada)) %>% count()
-
-```
-Eliminamos los avistamientos muy antiguos (anterior a 1900)
-
-```{r}
-nrow(lynx_clean2)
-
-lynx_clean2 <- lynx_clean2[lynx_clean2$year >= 1900,
-]
-
-nrow(lynx_clean2)
-
-```
-
-Con ello se obtiene una base temporalmente más coherente, adecuada para representar la evolución de los avistamientos en las últimas décadas.
-
-
-
-### 4.2 Limpieza del quebrantahuesos
-
-A continuación, se aplica el mismo procedimiento de limpieza al conjunto de datos del quebrantahuesos, utilizando los mismos criterios de selección de variables, filtrado espacial y depuración temporal.
-Eliminar duplicados por gbif ID
-
-```{r}
-nrow(Quebr)
-quebr_clean <- Quebr |> distinct(gbifID, .keep_all = TRUE)
-nrow(quebr_clean)
-
-quebr_clean <- quebr_clean[, c(
-  "decimalLatitude", "decimalLongitude",
-  "eventDate", "year", "month", "countryCode",
-  "individualCount", "stateProvince", "locality"
-)]
-
-# Filtrage Espagne uniquement
-quebr_clean <- quebr_clean %>% filter(countryCode == "ES")
-```
-
-quedarnos solo las variables que nos interesa
-
-
-
-
-eliminar na en longitud y latitud
-```{r}
-# Suppression coordonnées manquantes
-sum(is.na(quebr_clean$decimalLatitude) & is.na(quebr_clean$decimalLongitude))
-quebr_clean <- quebr_clean[
-  !is.na(quebr_clean$decimalLatitude) &
-  !is.na(quebr_clean$decimalLongitude),
-]
-
-quebr_clean <- quebr_clean %>%
-  filter(
-    decimalLatitude >= 36.0, decimalLatitude <= 43.9,
-    decimalLongitude >= -9.5, decimalLongitude <= 3.3
-  )
-nrow(quebr_clean)
-
-# Traitement de eventDate
-quebr_clean <- quebr_clean |>
-  mutate(eventDate = na_if(str_trim(eventDate), "")) %>%
-  filter(!is.na(eventDate))
-nrow(quebr_clean)
-```
-observamos que no hay ningún na en eventDate, pero muchos vacíos, lo eliminamos.
-
-
-convertir eventDate en columnas año, mes y dia, si no existe algún dato, por defecto será valor = 1
-
-PASO1 y 2: Limpiar eventDate y clasificar
-```{r}
-library(dplyr)
-library(stringr)
-library(lubridate)
-library(stringi)
-df <- quebr_clean %>%
-  mutate(
-    eventDate = as.character(eventDate),
-    eventDate = stri_replace_all_regex(eventDate, "\\p{Pd}", "-"),
-    eventDate = na_if(str_trim(eventDate), "")
-  ) %>%
-  mutate(
-    tipo_fecha = case_when(
-      str_detect(eventDate, "^\\d{4}$") ~ "solo_año",
-      str_detect(eventDate, "^\\d{4}-\\d{2}$") ~ "año_mes",
-      str_detect(eventDate, "^\\d{4}/\\d{4}$") ~ "intervalo_años",
-      str_detect(eventDate, "Z$") ~ "iso8601_Z",
-      str_detect(eventDate, "T\\d{2}:\\d{2}") ~ "iso8601",
-      str_detect(eventDate, "^\\d{4}-\\d{2}-\\d{2}$") ~ "fecha_simple",
-      str_detect(eventDate, "/") ~ "intervalo",
-      TRUE ~ "otro"
-    )
-  )
-
-df <- df %>% mutate(fecha_parseada = NA_Date_)
-
-idx <- df$tipo_fecha == "solo_año"
-df$fecha_parseada[idx] <- ymd(paste0(df$eventDate[idx], "-01-01"))
-
-idx <- df$tipo_fecha == "año_mes"
-df$fecha_parseada[idx] <- ymd(paste0(df$eventDate[idx], "-01"))
-
-idx <- df$tipo_fecha == "intervalo_años"
-df$fecha_parseada[idx] <- ymd(paste0(str_extract(df$eventDate[idx], "^\\d{4}"), "-01-01"))
-
-idx <- df$tipo_fecha == "fecha_simple"
-df$fecha_parseada[idx] <- ymd(df$eventDate[idx])
-
-idx <- df$tipo_fecha %in% c("intervalo", "iso8601_Z", "iso8601")
-df$fecha_parseada[idx] <- as.Date(
-  parse_date_time(
-    str_extract(df$eventDate[idx], "^[^/]+"),
-    orders = c("ymd HMS", "ymd HM", "ymd"),
-    tz = "UTC"
-  )
-)
-
-quebr_clean2 <- df %>%
-  mutate(
-    año = year(fecha_parseada),
-    mes = month(fecha_parseada),
-    dia = day(fecha_parseada)
-  )
-```
-
-recuento de los tipos de fechas
-```{r}
-quebr_clean2 %>% count(tipo_fecha)
-
-```
-Aseguramos que están todas parseadas
-```{r}
-quebr_clean2 %>% filter(is.na(fecha_parseada)) %>% count()
-```
-
-Eliminamos los avistamientos muy antiguos (anterior a 1900)
-
-```{r}
-nrow(quebr_clean2)
-
-quebr_clean2 <- quebr_clean2[
-  !is.na(quebr_clean2$eventDate) & quebr_clean$year >= 1900,
-]
-
-nrow(quebr_clean2)
+# ------------------------------------------------------------
+# Fonctions de limpieza actualizadas (compañero + simplificación)
+# ------------------------------------------------------------
+
+# 1. Parseo de fechas simplificado (reemplaza toda la parte de tipo_fecha)
+parse_gbif_dates <- function(df) {
+  df %>%
+    mutate(
+      eventDate = as.character(eventDate),
+      eventDate = str_replace_all(eventDate, "[^0-9TZ:/ -]", "-"),
+      eventDate = na_if(str_trim(eventDate), ""),
+      # Eliminar el sufijo Z (UTC) antes de parsear
+      eventDate_clean = str_remove(eventDate, "Z$"),
+      fecha_parseada = parse_date_time(
+        eventDate_clean,
+        orders = c("ymd HMS", "ymd HM", "ymd", "ym", "y"),
+        truncated = 1,
+        quiet = TRUE
+      ),
+      año = year(fecha_parseada),
+      mes = coalesce(month(fecha_parseada), 1L),
+      dia = coalesce(day(fecha_parseada), 1L)
+    ) %>%
+    select(-eventDate_clean)
+}
+
+# 2. Limpieza completa para una especie
+limpiar_gbif <- function(df) {
+  df %>%
+    # Columnas necesarias (incluye gbifID temporalmente)
+    select(
+      gbifID,
+      decimalLatitude, decimalLongitude,
+      eventDate, year, month, countryCode,
+      individualCount, stateProvince, locality
+    ) %>%
+    # España + Portugal
+    filter(!is.na(countryCode), countryCode %in% c("ES", "PT")) %>%
+    # Eliminar coordenadas (0,0)
+    filter(!(decimalLatitude == 0 & decimalLongitude == 0)) %>%
+    # Coordenadas válidas y dentro de la Península Ibérica
+    filter(
+      !is.na(decimalLatitude), !is.na(decimalLongitude),
+      between(decimalLatitude, 36.0, 43.9),
+      between(decimalLongitude, -9.5, 3.3)
+    ) %>%
+    # Limpiar fecha
+    mutate(eventDate = as.character(eventDate),
+           eventDate = na_if(str_trim(eventDate), "")) %>%
+    filter(!is.na(eventDate)) %>%
+    # Parseo simplificado
+    parse_gbif_dates() %>%
+    # Solo observaciones desde 1900
+    filter(año >= 1900) %>%
+    # Eliminar duplicados por gbifID (al final, como hace tu compañero)
+    distinct(gbifID, .keep_all = TRUE) %>%
+    # Quitar la columna gbifID
+    select(-gbifID)
+}
+
+lynx_clean  <- limpiar_gbif(Lynx)
+quebr_clean <- limpiar_gbif(Quebr)
 
 ```
 
@@ -368,29 +130,52 @@ En este objetivo se analiza la evolución temporal y la distribución espacial d
 En primer lugar, se analiza la evolución temporal del número de avistamientos en España durante el periodo 1990–2025. Se selecciona este intervalo porque se ajusta al horizonte temporal de 30–40 años planteado en el proyecto y permite evitar la influencia de registros demasiado antiguos y escasos.
 
 ```{r}
-lynx_obj1  <- lynx_clean[lynx_clean$year >= 1990, ]
-quebr_obj1 <- quebr_clean[quebr_clean$year >= 1990, ]
-```
+# ============================================================
+# Objectif 1 : Visualisation des observations (1990–2024)
+# ============================================================
 
-```{r}
-lynx_years <- as.data.frame(table(lynx_obj1$year))
+# Filtrer les données : 1990–2024, exclusion du Portugal (déjà filtré ES/PT avant, mais on garde)
+lynx_obj1  <- lynx_clean %>% filter(año >= 1990, año < 2025)
+quebr_obj1 <- quebr_clean %>% filter(año >= 1990, año < 2025)
+
+# ---- Évolution temporelle ----
+# Préparer les comptages annuels
+lynx_years <- as.data.frame(table(lynx_obj1$año))
 colnames(lynx_years) <- c("year", "n")
 lynx_years$year <- as.numeric(as.character(lynx_years$year))
 
-quebr_years <- as.data.frame(table(quebr_obj1$year))
+quebr_years <- as.data.frame(table(quebr_obj1$año))
 colnames(quebr_years) <- c("year", "n")
 quebr_years$year <- as.numeric(as.character(quebr_years$year))
+
+# Graphique initial (lynx – avant suppression de 2007)
+ggplot(lynx_years, aes(x = year, y = n)) +
+  geom_line() + geom_point() +
+  labs(title = "Lynx ibérique – observations par an (1990–2024, avec 2007)",
+       x = "Année", y = "Nombre") +
+  theme_minimal()
 ```
 
 ```{r}
+# Exclusion de 2007 pour le lynx
+lynx_obj1 <- lynx_obj1 %>% filter(año != 2007)
+lynx_years <- as.data.frame(table(lynx_obj1$año))
+colnames(lynx_years) <- c("year", "n")
+lynx_years$year <- as.numeric(as.character(lynx_years$year))
+
+# Graphique corrigé
 ggplot(lynx_years, aes(x = year, y = n)) +
-  geom_line() +
-  geom_point() +
-  labs(
-    title = "Number of Iberian lynx sightings per year in Spain (1990–2025)",
-    x = "Year",
-    y = "Number of sightings"
-  ) +
+  geom_line() + geom_point() +
+  labs(title = "Lynx ibérique – observations par an (1990–2024, sans 2007)",
+       x = "Année", y = "Nombre") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(quebr_years, aes(x = year, y = n)) +
+  geom_line() + geom_point() +
+  labs(title = "Gypaète barbu – observations par an (1990–2024)",
+       x = "Année", y = "Nombre") +
   theme_minimal()
 ```
 
@@ -401,15 +186,23 @@ Sin embargo, destaca un pico muy pronunciado en un año concreto, con un número
 Por tanto, aunque existe una tendencia al alza, los resultados deben interpretarse con cautela debido a la posible influencia de este valor atípico.
 
 ```{r}
-ggplot(quebr_years, aes(x = year, y = n)) +
-  geom_line() +
-  geom_point() +
-  labs(
-    title = "Number of Bearded Vulture sightings per year in Spain (1990–2025)",
-    x = "Year",
-    y = "Number of sightings"
-  ) +
-  theme_minimal()
+# Création des périodes (sans 2007 pour le lynx)
+lynx_obj1$period <- cut(
+  lynx_obj1$año,
+  breaks = c(1990, 2000, 2010, 2020, 2025),
+  labels = c("1990-1999", "2000-2009", "2010-2019", "2020-2024"),
+  right = FALSE
+)
+
+quebr_obj1$period <- cut(
+  quebr_obj1$año,
+  breaks = c(1990, 2000, 2010, 2020, 2025),
+  labels = c("1990-1999", "2000-2009", "2010-2019", "2020-2024"),
+  right = FALSE
+)
+
+# Carte de l'Espagne (une seule fois)
+spain_map <- map_data("world", region = "Spain")
 ```
 
 En el caso del quebrantahuesos, se observa una tendencia claramente creciente en el número de avistamientos desde principios de los años 2000. Este incremento es progresivo y se intensifica especialmente en la última década.
@@ -420,79 +213,32 @@ Sin embargo, en los últimos años se aprecia una caída brusca en el número de
 
 ### 5.2 Distribución espacial
 
-```{r}
-lynx_obj1$period <- cut(
-  lynx_obj1$year,
-  breaks = c(1990, 2000, 2010, 2020, 2026),
-  labels = c("1990-1999", "2000-2009", "2010-2019", "2020-2025"),
-  right = FALSE
-)
-
-lynx_obj1 <- lynx_obj1[!is.na(lynx_obj1$period), ]
-
-quebr_obj1$period <- cut(
-  quebr_obj1$year,
-  breaks = c(1990, 2000, 2010, 2020, 2026),
-  labels = c("1990-1999", "2000-2009", "2010-2019", "2020-2025"),
-  right = FALSE
-)
-
-quebr_obj1 <- quebr_obj1[!is.na(quebr_obj1$period), ]
-```
-
 Tras analizar la evolución temporal, se estudia a continuación la distribución espacial de los avistamientos. Para facilitar la interpretación, los registros se agrupan en cuatro periodos temporales en lugar de utilizar el año exacto como escala continua.
 
 La siguiente figura muestra la evolución temporal del número de avistamientos del lince ibérico en España.
 
 ```{r}
-spain_map <- map_data("world", region = "Spain")
+ggplot() +
+  geom_polygon(data = spain_map, aes(x = long, y = lat, group = group),
+               fill = "gray95", color = "black") +
+  geom_point(data = lynx_obj1, aes(x = decimalLongitude, y = decimalLatitude, color = period),
+             alpha = 0.5, size = 1) +
+  labs(title = "Lynx ibérique – distribution par période",
+       x = "Longitude", y = "Latitude", color = "Période") +
+  coord_fixed(1.3) + theme_minimal()
 
 ggplot() +
-  geom_polygon(
-    data = spain_map,
-    aes(x = long, y = lat, group = group),
-    fill = "gray95", color = "black"
-  ) +
-  geom_point(
-    data = lynx_obj1,
-    aes(x = decimalLongitude, y = decimalLatitude, color = period),
-    alpha = 0.5, size = 1
-  ) +
-  labs(       
-    title = "Spatial distribution of Iberian lynx sightings in Spain by period",
-    x = "Longitude",
-    y = "Latitude",
-    color = "Period"
-  ) +
-  coord_fixed(1.3) +
-  theme_minimal()
+  geom_polygon(data = spain_map, aes(x = long, y = lat, group = group),
+               fill = "gray95", color = "black") +
+  geom_point(data = quebr_obj1, aes(x = decimalLongitude, y = decimalLatitude, color = period),
+             alpha = 0.5, size = 1) +
+  labs(title = "Gypaète barbu – distribution par période",
+       x = "Longitude", y = "Latitude", color = "Période") +
+  coord_fixed(1.3) + theme_minimal()
 ```
 
 A continuación se presenta la evolución temporal de los avistamientos del quebrantahuesos.
 
-```{r}
-spain_map <- map_data("world", region = "Spain")
-
-ggplot() +
-  geom_polygon(
-    data = spain_map,
-    aes(x = long, y = lat, group = group),
-    fill = "gray95", color = "black"
-  ) +
-  geom_point(
-    data = quebr_obj1,
-    aes(x = decimalLongitude, y = decimalLatitude, color = period),
-    alpha = 0.5, size = 1
-  ) +
-  labs(
-    title = "Spatial distribution of Bearded Vulture sightings in Spain by period",
-    x = "Longitude",
-    y = "Latitude",
-    color = "Period"
-  ) +
-  coord_fixed(1.3) +
-  theme_minimal()
-```
 
 En general, se observa que el lince ibérico presenta una distribución más concentrada en el sur de España, mientras que el quebrantahuesos se localiza principalmente en zonas montañosas del norte. Además, el número de observaciones aumenta en las últimas décadas, lo que puede reflejar tanto una mejora en la conservación como un aumento en la recopilación de datos.
 
@@ -508,94 +254,101 @@ El API de OPENMETEO permite obtener variable meteológicas desde 1940-01-01 hast
 PASO1: para cada fecha, calcular un rango (inicio y fin de mes) mensual para OPENMETEO, en el que luego haremos la media mensual
 
 ```{r}
-library(lubridate)
+# ============================================================
+# OBJECTIF 3 – Variables météorologiques (Lynx)
+# ============================================================
 
-lynx_clean2$start_date <- as.Date(paste(lynx_clean2$año, lynx_clean2$mes, "01", sep = "-"))
-lynx_clean2$end_date   <- ceiling_date(lynx_clean2$start_date, "month") - days(1)
-```
-PASO2: función para comunicar con el API OPENMETEO
-Enviamos una (latitud, longitud, fecha inicio, fecha fin) y OPENMETEO nos devuelve un dataframe que contiene datos de temperatura, precipitación diario, calculamos la media temperatura y la precipitacion acumulada.
-```{r}
-library(httr)
-library(jsonlite)
+# 1. Créer les dates de début et fin de mois
+lynx_clean <- lynx_clean %>%
+  mutate(
+    start_date = as.Date(paste(año, mes, "01", sep = "-")),
+    end_date   = ceiling_date(start_date, "month") - days(1)
+  )
 
+# 2. Sous-ensemble pour les années couvertes par l'API (≥ 1940)
+lynx_meteo <- lynx_clean %>% filter(año >= 1940)
+
+# 3. Fonction d'appel à Open‑Meteo (version complète)
 get_openmeteo_monthly <- function(lat, lon, start_date, end_date) {
-  Sys.sleep(0.2)  # evitar Minutely API bloqueo
+  Sys.sleep(0.2)  # éviter de dépasser la limite de requêtes
   url <- "https://archive-api.open-meteo.com/v1/archive"
-
+  
   res <- GET(
     url,
     query = list(
-      latitude = lat,
+      latitude  = lat,
       longitude = lon,
       start_date = start_date,
-      end_date = end_date,
-      daily = "temperature_2m_mean,precipitation_sum",
+      end_date   = end_date,
+      daily = "temperature_2m_mean,precipitation_sum,temperature_2m_max,temperature_2m_min",
       timezone = "UTC"
     )
   )
-
+  
   datos <- fromJSON(content(res, "text", encoding = "UTF-8"))
-
+  
   datos$temp_media_mensual <- mean(datos$daily$temperature_2m_mean, na.rm = TRUE)
   datos$precip_mensual     <- sum(datos$daily$precipitation_sum, na.rm = TRUE)
+  datos$temp_max_mensual   <- max(datos$daily$temperature_2m_max, na.rm = TRUE)
+  datos$temp_min_mensual   <- min(datos$daily$temperature_2m_min, na.rm = TRUE)
+  
   return(datos)
 }
-```
-PRUEBA:
-```{r}
-m <- get_openmeteo_monthly(
-  lat = 39.47,
-  lon = -0.38,
-  start_date = "2020-02-01",
-  end_date   = "2020-02-28"
-)
 
-m
-```
-
-PASO3: creamos una tabla única para las fechas
-
-```{r}
-library(dplyr)
-
-df_fechas_OM <- lynx_clean2 %>%
-  distinct( decimalLatitude, decimalLongitude, start_date, end_date) %>%
-  arrange(start_date, end_date)
-nrow(df_fechas_OM)
-```
-
-PASO4: iterar la llamada fila por fila
-```{r}
-df_fechas_OM <- df_fechas_OM %>%
-  rowwise() %>%
-  mutate(
-    meteo = list(
-      get_openmeteo_monthly(decimalLatitude, decimalLongitude,start_date, end_date)
-  )
-)%>% 
+# 4. Récupération / calcul des données météo
+if (file.exists("habitat_lynx.csv")) {
   
-  ungroup()
-```
-PASO 5: Extraer de la lista respuesta solo los datos que nos interesa
-```{r}
-df_meses <- df_fechas_OM %>%
-  mutate(
-    temp_media_mensual = meteo$temp_media_mensual,
-    precip_mensual     = meteo$precip_mensual
-  ) %>%
-  select(-meteo)
+  if (!exists("df_meses")) {
+    df_meses <- read.csv("habitat_lynx.csv") %>%
+      mutate(across(c(start_date, end_date), as.Date))
+    message("df_meses chargé depuis habitat_lynx.csv")
+  } else {
+    message("df_meses déjà présent en mémoire")
+  }
+  
+} else {
+  
+  message("Appels API nécessaires, veuillez patienter...")
+  
+  # Combinaisons uniques (lat, lon, mois)
+  df_fechas_OM <- lynx_meteo %>%
+    distinct(decimalLatitude, decimalLongitude, start_date, end_date) %>%
+    drop_na() %>%
+    arrange(start_date, end_date)
+  
+  cat("Nombre d'appels API :", nrow(df_fechas_OM), "\n")
+  
+  # Appels ligne par ligne
+  df_fechas_OM <- df_fechas_OM %>%
+    rowwise() %>%
+    mutate(
+      meteo = list(
+        get_openmeteo_monthly(decimalLatitude, decimalLongitude, start_date, end_date)
+      )
+    ) %>%
+    ungroup()
+  
+  # Extraction des variables
+  df_meses <- df_fechas_OM %>%
+    mutate(
+      temp_media_mensual = meteo$temp_media_mensual,
+      precip_mensual     = meteo$precip_mensual,
+      temp_max_mensual   = meteo$temp_max_mensual,
+      temp_min_mensual   = meteo$temp_min_mensual
+    ) %>%
+    select(-meteo)
+  
+  # Sauvegarde
+  write.csv(df_meses, "habitat_lynx.csv", row.names = FALSE)
+  message("Données météo sauvegardées dans habitat_lynx.csv")
+}
 
-```
-
-PASO 6: unir las columnas respuestas con la tabla original
-```{r}
-lynx_clean <- df_meses %>%
+# 5. Jointure avec lynx_clean (écrase volontairement pour la suite)
+lynx_clean <- lynx_clean %>%
   left_join(
     df_meses,
-    by = c( "lat", "lon","start_date", "end_date",)
+    by = c("decimalLatitude", "decimalLongitude", "start_date", "end_date")
   )
-
 ```
 
 
@@ -607,6 +360,11 @@ lynx_clean <- df_meses %>%
 
 ```{r}
 
+# ============================================================
+# OBJECTIF 2 – Impact des aires protégées
+# ============================================================
+
+# 1. Chargement / mise en cache des aires protégées
 processed_data_file <- "protected_areas_spain.rds"
 
 if (file.exists(processed_data_file)) {
@@ -623,46 +381,55 @@ if (file.exists(processed_data_file)) {
   rm(poly0, poly1, poly2)
 }
 
-# Spatial join
-lynx_sf  <- st_as_sf(lynx_obj1, coords = c("decimalLongitude", "decimalLatitude"), crs = 4326, remove = FALSE)
-quebr_sf <- st_as_sf(quebr_obj1, coords = c("decimalLongitude", "decimalLatitude"), crs = 4326, remove = FALSE)
+# Simplification pour les cartes (une seule fois)
+protected_sf_map <- st_simplify(protected_sf_spain, dTolerance = 0.005)
 
+# 2. Création des objets sf à partir des données déjà filtrées (obj1)
+#    On garde les colonnes originales (remove = FALSE)
+lynx_sf <- st_as_sf(lynx_obj1, coords = c("decimalLongitude", "decimalLatitude"),
+                    crs = 4326, remove = FALSE)
+quebr_sf <- st_as_sf(quebr_obj1, coords = c("decimalLongitude", "decimalLatitude"),
+                     crs = 4326, remove = FALSE)
+
+# 3. Intersection avec les aires protégées
 lynx_sf$in_protected  <- lengths(st_intersects(lynx_sf, protected_sf_spain)) > 0
 quebr_sf$in_protected <- lengths(st_intersects(quebr_sf, protected_sf_spain)) > 0
 
+# 4. Version data frame pour les graphiques
 lynx_obj2  <- st_drop_geometry(lynx_sf)
 quebr_obj2 <- st_drop_geometry(quebr_sf)
 
-# Simplification pour la carte interactive
-protected_sf_map <- st_simplify(protected_sf_spain, dTolerance = 0.005)
-
+# ─── Graphiques d'évolution par zone ─────────────────────────
 plot_evolution <- function(df, species_name) {
   df %>%
-    filter(year >= 1990) %>%
+    filter(año >= 1990) %>%
     mutate(Zone = ifelse(in_protected, "Protégée", "Non protégée")) %>%
-    group_by(year, Zone) %>%
-    summarise(count = n(), .groups = "drop") %>%
-    ggplot(aes(x = year, y = count, color = Zone)) +
-    geom_line(linewidth = 1) + geom_point(size = 2) +
-    scale_color_manual(values = c("Protégée" = "#2E7D32", "Non protégée" = "#C62828")) +
+    count(año, Zone, name = "count") %>%                    # count() plus court
+    complete(año = 1990:2024, Zone, fill = list(count = 0)) %>%  # ← AJOUTER CETTE LIGNE
+    ggplot(aes(x = año, y = count, color = Zone)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    scale_color_manual(values = c("Protégée" = "#2E7D32", 
+                                   "Non protégée" = "#C62828")) +
     labs(title = paste("Évolution des observations de", species_name),
          x = "Année", y = "Nombre d'observations") +
-    theme_minimal() + theme(legend.position = "bottom")
+    theme_minimal() +
+    theme(legend.position = "bottom")
 }
 
 plot_evolution(lynx_obj2, "Lynx ibérique")
 plot_evolution(quebr_obj2, "Gypaète barbu")
 
-
-target_years <- c(2007, 2010, 2013, 2018, 2020, 2021, 2022, 2023, 2024, 2025)
+# ─── Heatmap de croissance période à période ─────────────────
+target_years <- c(2007, 2010, 2013, 2018, 2020, 2021, 2022, 2023, 2024)
 
 prepare_period_data <- function(df, species_name) {
   df %>%
-    filter(year %in% target_years) %>%
+    filter(año %in% target_years) %>%
     mutate(zone = ifelse(in_protected, "Protégée", "Non protégée")) %>%
-    group_by(year, zone) %>%
+    group_by(año, zone) %>%
     summarise(total = n(), .groups = "drop") %>%
-    complete(year = target_years, zone, fill = list(total = 0)) %>%
+    complete(año = target_years, zone, fill = list(total = 0)) %>%
     mutate(species = species_name)
 }
 
@@ -673,11 +440,11 @@ combined <- bind_rows(
 
 heatmap_data <- combined %>%
   group_by(species, zone) %>%
-  arrange(year) %>%
+  arrange(año) %>%
   mutate(
-    prev_year  = lag(year),
+    prev_year  = lag(año),
     prev_total = lag(total),
-    period     = paste0(prev_year, "-", year),
+    period     = paste0(prev_year, "-", año),
     delta_pct  = ifelse(!is.na(prev_total) & prev_total >= 5,
                         round((total - prev_total) / prev_total * 100, 1), NA),
     label_text = case_when(
@@ -689,8 +456,6 @@ heatmap_data <- combined %>%
   ) %>%
   filter(!is.na(period)) %>%
   mutate(period = factor(period, levels = unique(period)))
-
-
 
 ggplot(heatmap_data, aes(x = period, y = zone, fill = delta_pct)) +
   geom_tile(color = "white", linewidth = 0.8) +
@@ -708,14 +473,14 @@ ggplot(heatmap_data, aes(x = period, y = zone, fill = delta_pct)) +
         strip.text = element_text(face = "bold", size = 13),
         panel.grid = element_blank())
 
-
+# ─── Proportion d'observations par zone ──────────────────────
 pct_data <- combined %>%
-  group_by(species, year) %>%
+  group_by(species, año) %>%
   mutate(pct = round(total / sum(total) * 100, 1)) %>%
   ungroup() %>%
   filter(sum(total) > 0)
 
-ggplot(pct_data, aes(x = factor(year), y = pct, fill = zone)) +
+ggplot(pct_data, aes(x = factor(año), y = pct, fill = zone)) +
   geom_col(position = "fill", width = 0.7) +
   geom_text(aes(label = ifelse(pct >= 8, paste0(pct, "%"), "")),
             position = position_fill(vjust = 0.5), size = 3.2, fontface = "bold", color = "white") +
@@ -729,51 +494,22 @@ ggplot(pct_data, aes(x = factor(year), y = pct, fill = zone)) +
         panel.grid.major.x = element_blank(),
         axis.text.x = element_text(angle = 45, hjust = 1))
 
-pal_lynx    <- colorFactor(c("#006d2c", "#e6550d"), domain = c("TRUE", "FALSE"))
-pal_vulture <- colorFactor(c("#2b8cbe", "#c51b8a"), domain = c("TRUE", "FALSE"))
-```
-
-
-
-
-# ============================================================
-# Cartes interactives – Aires protégées avec slider sur toutes les années ≥ 2000
-# ============================================================
-
-```{r}
-
-# Préparation des données : toutes les années ≥ 2000
-lynx_map_data <- lynx_sf %>%
-  filter(year >= 2000) %>%
-  mutate(
-    lng       = st_coordinates(.)[, 1],
-    lat       = st_coordinates(.)[, 2],
-    protected = in_protected
-  ) %>%
-  st_drop_geometry() %>%
-  select(lng, lat, year, protected)
-
-quebr_map_data <- quebr_sf %>%
-  filter(year >= 2000) %>%
-  mutate(
-    lng       = st_coordinates(.)[, 1],
-    lat       = st_coordinates(.)[, 2],
-    protected = in_protected
-  ) %>%
-  st_drop_geometry() %>%
-  select(lng, lat, year, protected)
-
-# Création des objets Crosstalk
-shared_lynx  <- SharedData$new(lynx_map_data, group = "lynx_group")
-shared_quebr <- SharedData$new(quebr_map_data, group = "quebr_group")
-
-# Palette de couleurs
+# ─── Cartes interactives ─────────────────────────────────────
+# Utiliser directement lynx_sf / quebr_sf (objets sf)
 pal_lynx    <- colorFactor(c("#006d2c", "#e6550d"), domain = c(TRUE, FALSE))
 pal_vulture <- colorFactor(c("#2b8cbe", "#c51b8a"), domain = c(TRUE, FALSE))
 
-# Fonction génératrice d'une carte (slider couvrant toutes les années présentes)
-make_map <- function(shared_data, species_name, pal, map_id) {
-  # JavaScript pour récupérer les coordonnées au clic
+make_map <- function(sp_sf, species_name, pal, map_id) {
+  # Extraire les coordonnées et l'année
+  sp_data <- sp_sf %>%
+    filter(año >= 2000) %>%
+    mutate(
+      lng = st_coordinates(.)[, 1],
+      lat = st_coordinates(.)[, 2],
+      protected = in_protected
+    ) %>%
+    st_drop_geometry()
+  
   click_js <- sprintf("
     function(el, x) {
       var map = this;
@@ -786,78 +522,46 @@ make_map <- function(shared_data, species_name, pal, map_id) {
     }", map_id)
 
   tagList(
-    # Affichage des coordonnées
     tags$div(
       id = paste0("coords-", map_id),
       style = "font-family: monospace; font-size: 13px; margin-bottom: 4px; padding: 4px 8px;
                background: #f8f9fa; border-radius: 4px; display: inline-block;",
       HTML("Cliquez sur la carte pour afficher les coordonnées")
     ),
-
-    # Curseur d'année (toutes les années disponibles)
     filter_slider(
       paste0("year_slider_", map_id),
       label = "Filtrer par année :",
-      sharedData = shared_data,
-      
-      column = ~year,          # la colonne utilisée pour filtrer
-      # La plage sera automatiquement déterminée par les valeurs min/max présentes
+      sharedData = SharedData$new(sp_data, group = paste0(map_id, "_group")),
+      column = ~año,
       step = 1,
       sep = "",
       width = "100%"
     ),
-
-    # Carte Leaflet
-    leaflet(shared_data, width = "100%", height = 500) %>%
+    leaflet(SharedData$new(sp_data, group = paste0(map_id, "_group")),
+            width = "100%", height = 500) %>%
       addProviderTiles(providers$CartoDB.Positron) %>%
-      addPolygons(
-        data        = protected_sf_map,
-        color       = "#2ca25f",
-        weight      = 1,
-        fillOpacity = 0.2,
-        group       = "Aires protégées",
-        label       = ~DESIG_ENG
-      ) %>%
-      addCircleMarkers(
-        lng         = ~lng,
-        lat         = ~lat,
-        color       = ~pal(protected),
-        radius      = 4,
-        stroke      = TRUE,
-        weight      = 1,
-        fillOpacity = 0.85,
-        popup = ~paste0(
-          "<b>", species_name, "</b> (", year, ")<br>",
-          "Statut : ", ifelse(protected, "Intérieur protégé", "Extérieur protégé"), "<br>",
-          "<span style='color:#888;font-size:11px'>",
-          round(lng, 4), ", ", round(lat, 4),
-          "</span>"
-        )
-      ) %>%
-      addLayersControl(
-        overlayGroups = "Aires protégées",
-        options       = layersControlOptions(collapsed = FALSE)
-      ) %>%
+      addPolygons(data = protected_sf_map, color = "#2ca25f", weight = 1,
+                  fillOpacity = 0.2, group = "Aires protégées", label = ~DESIG_ENG) %>%
+      addCircleMarkers(lng = ~lng, lat = ~lat, color = ~pal(protected),
+                       radius = 4, stroke = TRUE, weight = 1, fillOpacity = 0.85,
+                       popup = ~paste0("<b>", species_name, "</b> (", año, ")<br>",
+                                       "Statut : ", ifelse(protected, "Intérieur protégé", "Extérieur protégé"), "<br>",
+                                       round(lng, 4), ", ", round(lat, 4))) %>%
+      addLayersControl(overlayGroups = "Aires protégées",
+                       options = layersControlOptions(collapsed = FALSE)) %>%
       addFullscreenControl(pseudoFullscreen = TRUE) %>%
-      addLegend(
-        position = "bottomright",
-        colors   = c(pal(TRUE), pal(FALSE)),
-        labels   = c("Intérieur protégé", "Extérieur protégé"),
-        title    = species_name,
-        opacity  = 0.9
-      ) %>%
+      addLegend(position = "bottomright", colors = c(pal(TRUE), pal(FALSE)),
+                labels = c("Intérieur protégé", "Extérieur protégé"),
+                title = species_name, opacity = 0.9) %>%
       htmlwidgets::onRender(click_js)
   )
 }
 
-# Génération des deux cartes
-map_lynx    <- make_map(shared_lynx,  "Lynx ibérique",    pal_lynx,    "lynx")
-map_vulture <- make_map(shared_quebr, "Gypaète barbu",    pal_vulture, "vulture")
+map_lynx    <- make_map(lynx_sf,  "Lynx ibérique",    pal_lynx,    "lynx")
+map_vulture <- make_map(quebr_sf, "Gypaète barbu",    pal_vulture, "vulture")
 
-# Affichage vertical
 tagList(
-  tags$h4("Distribution spatiale – Aires protégées (années ≥ 2000)", 
-          style = "margin-top: 20px; margin-bottom: 15px;"),
+  tags$h4("Distribution spatiale – Aires protégées (années ≥ 2000)"),
   tags$div(style = "margin-bottom: 40px;", map_lynx),
   tags$div(style = "margin-bottom: 20px;", map_vulture)
 )
