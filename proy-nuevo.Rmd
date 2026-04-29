@@ -12,10 +12,11 @@ output:
 
 ```{r setup, include=FALSE, warning=FALSE, message=FALSE}
 # ------------------------------------------------------------
-# Chargement unique des librairies (fusion des deux fichiers)
+# Carga de las librerías
 # ------------------------------------------------------------
 library(ggplot2)
 library(dplyr)
+library(plotly)
 library(tidyr)
 library(stringr)
 library(lubridate)
@@ -36,7 +37,8 @@ library(scales)
 
 
 ```{r}
-sf_use_s2(FALSE)
+# Carga de los datos
+invisible(sf_use_s2(FALSE))
 
 Lynx  <- read.csv("Lynx.csv",              sep = "\t", quote = "")
 Quebr <- read.csv("Quebrantahuesos.csv",   sep = "\t", quote = "")
@@ -45,17 +47,20 @@ Quebr <- read.csv("Quebrantahuesos.csv",   sep = "\t", quote = "")
 
 ## 4. Limpieza de datos
 
-En esta sección se realiza la limpieza de los datos obtenidos de GBIF para ambas especies. El objetivo es construir una base homogénea y fiable para los análisis posteriores. Para ello, se aplican los mismos criterios de selección de variables, filtrado geográfico, revisión temporal y eliminación de duplicados en ambos conjuntos de datos.
+Para ambas especies (lince ibérico y quebrantahuesos) se aplica un mismo procedimiento de limpieza con el objetivo de obtener conjuntos de datos homogéneos y comparables.
+
+El proceso incluye la selección de variables relevantes, el filtrado geográfico para conservar únicamente observaciones en España y Portugal, la eliminación de coordenadas inválidas, la estandarización de la información temporal y la eliminación de registros duplicados.
 
 ### 4.1 Limpieza del lince ibérico
-antes de todo, eliminamos los duplicados por gbif ID
+
+Para el lince ibérico se aplica un proceso de limpieza centrado en conservar únicamente los registros útiles para el análisis espacial y temporal. En primer lugar, se seleccionan las variables necesarias, incluyendo temporalmente `gbifID` para identificar registros duplicados. Después, se filtran las observaciones localizadas en España y Portugal, se eliminan coordenadas no válidas y se transforma la información temporal a un formato homogéneo.
 
 ```{r}
 # ------------------------------------------------------------
-# Fonctions de limpieza actualizadas (compañero + simplificación)
+# Funciones auxiliares de limpieza
 # ------------------------------------------------------------
 
-# 1. Parseo de fechas simplificado (reemplaza toda la parte de tipo_fecha)
+# 1. Para evitar duplicar código, se define una función general de limpieza que se aplica de forma idéntica a ambos conjuntos de datos.
 parse_gbif_dates <- function(df) {
   df %>%
     mutate(
@@ -80,32 +85,32 @@ parse_gbif_dates <- function(df) {
 # 2. Limpieza completa para una especie
 limpiar_gbif <- function(df) {
   df %>%
-    # Columnas necesarias (incluye gbifID temporalmente)
+    # Selección de variables relevantes (incluye gbifID temporalmente)
     select(
       gbifID,
       decimalLatitude, decimalLongitude,
       eventDate, year, month, countryCode,
       individualCount, stateProvince, locality
     ) %>%
-    # España + Portugal
+    # Filtrado geográfico (España y Portugal)
     filter(!is.na(countryCode), countryCode %in% c("ES", "PT")) %>%
-    # Eliminar coordenadas (0,0)
+    # Eliminación de coordenadas no válidas (0,0)
     filter(!(decimalLatitude == 0 & decimalLongitude == 0)) %>%
-    # Coordenadas válidas y dentro de la Península Ibérica
+    # Filtrado de coordenadas dentro de la Península Ibérica
     filter(
       !is.na(decimalLatitude), !is.na(decimalLongitude),
       between(decimalLatitude, 36.0, 43.9),
       between(decimalLongitude, -9.5, 3.3)
     ) %>%
-    # Limpiar fecha
+    # Limpieza y estandarización de fechas
     mutate(eventDate = as.character(eventDate),
            eventDate = na_if(str_trim(eventDate), "")) %>%
     filter(!is.na(eventDate)) %>%
-    # Parseo simplificado
+    # Conversión a variables temporales (año, mes, día)
     parse_gbif_dates() %>%
     # Solo observaciones desde 1900
     filter(año >= 1900) %>%
-    # Eliminar duplicados por gbifID (al final, como hace tu compañero)
+    # Eliminación de registros duplicados
     distinct(gbifID, .keep_all = TRUE) %>%
     # Quitar la columna gbifID
     select(-gbifID)
@@ -116,10 +121,13 @@ quebr_clean <- limpiar_gbif(Quebr)
 
 ```
 
+La función se aplica a ambos conjuntos de datos, obteniendo así dos bases depuradas y consistentes. Este enfoque garantiza que los mismos criterios de limpieza se utilicen en ambas especies, facilitando su comparación en los análisis posteriores.
+
+Tras este proceso, se obtienen dos bases depuradas (lince ibérico y quebrantahuesos), con registros geográficamente válidos y fechas transformadas en variables de año, mes y día. Estas bases se utilizarán en los análisis temporales y espaciales posteriores.
 
 ### 4.3 Resumen de la limpieza
 
-En resumen, tras aplicar los filtros de selección, localización, calidad espacial, consistencia temporal y eliminación de duplicados, se obtienen dos conjuntos de datos más homogéneos y adecuados para el análisis. Esta depuración permite trabajar con observaciones comparables y reduce el efecto de registros incompletos o problemáticos.
+En resumen, el proceso de limpieza permitió obtener dos conjuntos de datos homogéneos y comparables. Se eliminaron registros duplicados, observaciones sin localización válida, coordenadas erróneas y fechas no interpretables. Además, la información temporal se estandarizó para facilitar el análisis de la evolución de los avistamientos a lo largo del tiempo.
 
 ## 5. Objetivo 1. Visualización de avistamientos
 
@@ -131,15 +139,15 @@ En primer lugar, se analiza la evolución temporal del número de avistamientos 
 
 ```{r}
 # ============================================================
-# Objectif 1 : Visualisation des observations (1990–2024)
+# Objetivo 1: Visualización de los avistamientos (1990–2024)
 # ============================================================
 
-# Filtrer les données : 1990–2024, exclusion du Portugal (déjà filtré ES/PT avant, mais on garde)
+# Filtrado de datos: 1990–2024
 lynx_obj1  <- lynx_clean %>% filter(año >= 1990, año < 2025)
 quebr_obj1 <- quebr_clean %>% filter(año >= 1990, año < 2025)
 
-# ---- Évolution temporelle ----
-# Préparer les comptages annuels
+# ---- Evolución temporal ----
+# Preparación de los conteos anuales
 lynx_years <- as.data.frame(table(lynx_obj1$año))
 colnames(lynx_years) <- c("year", "n")
 lynx_years$year <- as.numeric(as.character(lynx_years$year))
@@ -148,96 +156,126 @@ quebr_years <- as.data.frame(table(quebr_obj1$año))
 colnames(quebr_years) <- c("year", "n")
 quebr_years$year <- as.numeric(as.character(quebr_years$year))
 
-# Graphique initial (lynx – avant suppression de 2007)
+# Gráfico inicial
 ggplot(lynx_years, aes(x = year, y = n)) +
   geom_line() + geom_point() +
-  labs(title = "Lynx ibérique – observations par an (1990–2024, avec 2007)",
-       x = "Année", y = "Nombre") +
+  labs(title = "Lince ibérico – avistamientos por año (1990–2024)",
+       x = "Año", y = "Número de avistamientos") +
   theme_minimal()
 ```
+En la serie temporal del lince ibérico se observa una tendencia general creciente en el número de avistamientos a lo largo del periodo analizado. Este aumento es especialmente visible a partir de la década de 2010.
+
+Sin embargo, destaca un pico muy pronunciado en el año 2007, con un número de observaciones muy superior al resto. Este comportamiento no parece corresponder a una evolución natural de la población, sino más bien a un efecto relacionado con la recopilación de datos, como la incorporación masiva de registros o campañas de observación intensiva.
+
+Por este motivo, se decide excluir este año del análisis temporal para evitar distorsiones en la interpretación de la tendencia.
 
 ```{r}
-# Exclusion de 2007 pour le lynx
+# Exclusión del año 2007 para el lince ibérico
 lynx_obj1 <- lynx_obj1 %>% filter(año != 2007)
 lynx_years <- as.data.frame(table(lynx_obj1$año))
 colnames(lynx_years) <- c("year", "n")
 lynx_years$year <- as.numeric(as.character(lynx_years$year))
 
-# Graphique corrigé
+# Gráfico corregido (sin 2007)
 ggplot(lynx_years, aes(x = year, y = n)) +
   geom_line() + geom_point() +
-  labs(title = "Lynx ibérique – observations par an (1990–2024, sans 2007)",
-       x = "Année", y = "Nombre") +
+  labs(title = "Número de avistamientos del lince ibérico por año (1990–2024, sin 2007)",
+       x = "Año", y = "Número de avistamientos") +
   theme_minimal()
 ```
+Una vez eliminado este valor atípico, la evolución temporal resulta más coherente. Se observa una tendencia general al alza en el número de avistamientos, aunque con cierta variabilidad a lo largo del periodo.
+
+En particular, tras un aumento inicial, se aprecia una fase de descenso o estabilización en torno a mediados de la década de 2010, seguida de un crecimiento más marcado en los años recientes.
+
+Esta tendencia puede reflejar tanto una mejora en el estado de conservación de la especie como un aumento en el esfuerzo de observación y en la disponibilidad de datos.
 
 ```{r}
 ggplot(quebr_years, aes(x = year, y = n)) +
   geom_line() + geom_point() +
-  labs(title = "Gypaète barbu – observations par an (1990–2024)",
-       x = "Année", y = "Nombre") +
+  labs(title = "Número de avistamientos del quebrantahuesos por año (1990–2024)",
+       x = "Año", y = "Número de avistamientos") +
   theme_minimal()
 ```
-
-En la serie temporal del lince ibérico se observa una tendencia general creciente en el número de avistamientos a lo largo del periodo analizado. Este aumento es especialmente visible a partir de la década de 2010.
-
-Sin embargo, destaca un pico muy pronunciado en un año concreto, con un número de observaciones muy superior al resto. Este comportamiento no parece corresponder a una evolución natural de la población, sino más bien a un efecto relacionado con la recopilación de datos, como la incorporación masiva de registros o campañas de observación intensiva.
-
-Por tanto, aunque existe una tendencia al alza, los resultados deben interpretarse con cautela debido a la posible influencia de este valor atípico.
-
-```{r}
-# Création des périodes (sans 2007 pour le lynx)
-lynx_obj1$period <- cut(
-  lynx_obj1$año,
-  breaks = c(1990, 2000, 2010, 2020, 2025),
-  labels = c("1990-1999", "2000-2009", "2010-2019", "2020-2024"),
-  right = FALSE
-)
-
-quebr_obj1$period <- cut(
-  quebr_obj1$año,
-  breaks = c(1990, 2000, 2010, 2020, 2025),
-  labels = c("1990-1999", "2000-2009", "2010-2019", "2020-2024"),
-  right = FALSE
-)
-
-# Carte de l'Espagne (une seule fois)
-spain_map <- map_data("world", region = "Spain")
-```
-
 En el caso del quebrantahuesos, se observa una tendencia claramente creciente en el número de avistamientos desde principios de los años 2000. Este incremento es progresivo y se intensifica especialmente en la última década.
 
 Este comportamiento puede reflejar tanto una mejora en el estado de conservación de la especie como un aumento en el esfuerzo de observación y en la disponibilidad de datos.
 
-Sin embargo, en los últimos años se aprecia una caída brusca en el número de registros. Este descenso no debe interpretarse como una disminución real de la población, sino probablemente como consecuencia de que los datos más recientes aún no están completamente incorporados en la base de datos.
-
 ### 5.2 Distribución espacial
 
-Tras analizar la evolución temporal, se estudia a continuación la distribución espacial de los avistamientos. Para facilitar la interpretación, los registros se agrupan en cuatro periodos temporales en lugar de utilizar el año exacto como escala continua.
+Tras analizar la evolución temporal, se estudia a continuación la distribución espacial de los avistamientos en España.
 
-La siguiente figura muestra la evolución temporal del número de avistamientos del lince ibérico en España.
+Se realiza una visualización que permite explorar la distribución de los avistamientos año a año mediante un control deslizante. Esto facilita identificar cambios espaciales en la presencia de la especie a lo largo del tiempo.
+
+Por coherencia con el análisis temporal, la visualización espacial del lince ibérico se presenta a partir de 2008, excluyendo el año 2007.
+
+La siguiente figura muestra la distribución espacial de los avistamientos del lince ibérico en España para cada año del periodo analizado.
 
 ```{r}
-ggplot() +
-  geom_polygon(data = spain_map, aes(x = long, y = lat, group = group),
-               fill = "gray95", color = "black") +
-  geom_point(data = lynx_obj1, aes(x = decimalLongitude, y = decimalLatitude, color = period),
-             alpha = 0.5, size = 1) +
-  labs(title = "Lynx ibérique – distribution par période",
-       x = "Longitude", y = "Latitude", color = "Période") +
-  coord_fixed(1.3) + theme_minimal()
+lynx_map_data <- lynx_obj1 %>%
+  filter(año >= 2008,
+         !is.na(año),
+         !is.na(decimalLongitude),
+         !is.na(decimalLatitude))
 
-ggplot() +
-  geom_polygon(data = spain_map, aes(x = long, y = lat, group = group),
-               fill = "gray95", color = "black") +
-  geom_point(data = quebr_obj1, aes(x = decimalLongitude, y = decimalLatitude, color = period),
-             alpha = 0.5, size = 1) +
-  labs(title = "Gypaète barbu – distribution par période",
-       x = "Longitude", y = "Latitude", color = "Période") +
-  coord_fixed(1.3) + theme_minimal()
+plot_ly(
+  data = lynx_map_data,
+  type = "scattermapbox",
+  mode = "markers",
+  lon = ~decimalLongitude,
+  lat = ~decimalLatitude,
+  frame = ~año,
+  marker = list(
+    size = 8,
+    opacity = 0.8
+  ),
+  text = ~paste0("Año: ", año),
+  hoverinfo = "text"
+) %>%
+  layout(
+    title = "Distribución espacial del lince ibérico por año",
+    mapbox = list(
+      style = "carto-positron",
+      center = list(lon = -3.5, lat = 40),
+      zoom = 5
+    ),
+    margin = list(l = 0, r = 0, t = 50, b = 0),
+    showlegend = FALSE
+  )
 ```
 
 A continuación se presenta la evolución temporal de los avistamientos del quebrantahuesos.
+
+```{r}
+quebr_map_data <- quebr_obj1 %>%
+  filter(!is.na(año),
+         !is.na(decimalLongitude),
+         !is.na(decimalLatitude))
+
+plot_ly(
+  data = quebr_map_data,
+  type = "scattermapbox",
+  mode = "markers",
+  lon = ~decimalLongitude,
+  lat = ~decimalLatitude,
+  frame = ~año,
+  marker = list(
+    size = 6,
+    opacity = 0.7
+  ),
+  text = ~paste0("Año: ", año),
+  hoverinfo = "text"
+) %>%
+  layout(
+    title = "Distribución espacial del quebrantahuesos por año",
+    mapbox = list(
+      style = "carto-positron",
+      center = list(lon = -3.5, lat = 40),
+      zoom = 5
+    ),
+    margin = list(l = 0, r = 0, t = 50, b = 0),
+    showlegend = FALSE
+  )
+```
 
 
 En general, se observa que el lince ibérico presenta una distribución más concentrada en el sur de España, mientras que el quebrantahuesos se localiza principalmente en zonas montañosas del norte. Además, el número de observaciones aumenta en las últimas décadas, lo que puede reflejar tanto una mejora en la conservación como un aumento en la recopilación de datos.
