@@ -693,3 +693,552 @@ leaflet() %>%
 
 ```
 
+
+# ======================================================
+# OBJETIVO 3: Estudio del hábitat (variables climáticos)
+# ======================================================
+
+## 3.1 hábitat del lince ibérico
+
+Pequeña limpieza de datos para OBJETIVO 3
+EXCLUIMOS los datos antes de 2007, porque resulta ser un error de ingresar datos, y sacamos las columnas que nos resultan interesantes.
+```{r}
+lynx_obj3 <- lynx_clean[lynx_clean$year > 2007,]
+# sacar las columnas útiles
+lynx_obj3 <- lynx_obj3 %>%
+  select(
+    decimalLatitude,
+    decimalLongitude,
+    fecha_parseada
+  )
+# filtrar na
+lynx_obj3 <- lynx_obj3 %>%
+  filter(
+    !is.na(decimalLatitude),
+    !is.na(decimalLongitude)
+  )
+```
+
+Utilizamos las zonas agrupadas del objetivo 2 y calculamos un punto centroide (representante) para cada zona.
+```{r}
+library(sf)
+library(dplyr)
+
+zones_lynx <- lynx_sf_clusters %>%
+  group_by(cluster) %>%
+  summarise(
+    geometry = st_combine(geometry),
+    n_points = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    centroid = st_centroid(geometry),
+    lon = st_coordinates(centroid)[,1],
+    lat = st_coordinates(centroid)[,2]
+  )
+
+```
+
+
+FASE 1: descarga de datos meteológicos
+una vez obtenemos los resultados, dejamos eval=FALSE para que no vuelva a llamar el API y trabajmos sobre el resultado guardado.
+ALREDEDOR DE 17años x 365 días x 82 zonas = 508810 filas
+```{r,eval=FALSE}
+
+# función de descarga diaria para lince
+library(httr)
+library(jsonlite)
+
+get_openmeteo_daily_lynx <- function(lat, lon, start_date, end_date) {
+
+  url <- "https://archive-api.open-meteo.com/v1/archive"
+
+  res <- GET(url, query = list(
+    latitude = lat,
+    longitude = lon,
+    start_date = start_date,
+    end_date   = end_date,
+    daily = paste(
+      c("temperature_2m_mean",
+        "temperature_2m_max",
+        "temperature_2m_min",
+        "precipitation_sum"),
+      collapse = ","
+    ),
+    timezone = "UTC"
+  ))
+  # pasar a JSON para leer mejor
+
+  content <- fromJSON(rawToChar(res$content), simplifyDataFrame = TRUE)
+
+  # sacar solo los datos que nos interesa
+  data.frame(
+    date = as.Date(content$daily$time),
+    tmean = content$daily$temperature_2m_mean,
+    tmax  = content$daily$temperature_2m_max,
+    tmin  = content$daily$temperature_2m_min,
+    prec  = content$daily$precipitation_sum
+  )
+}
+
+# FIN DE LA FUNCIÓN
+# iterar por zonas
+# creamos una lista resultado para ir metiendo los resultados
+resultados_meteolynx <- list()
+
+
+# para cada zona, aplicar la función meteo
+for (i in seq_len(nrow(zones_lynx))) {
+
+  cat("Procesando zona", zones_lynx$cluster[i], "\n")
+
+  meteo_lynx_i <- get_openmeteo_daily_lynx(
+    lat = zones_quebr$lat[i],
+    lon = zones_quebr$lon[i],
+    start_date = as.Date("2008-01-01"),
+    end_date   = as.Date("2024-12-31")
+  )
+
+  # etiqueta la zona
+  meteo_lynx_i$cluster <- rep(zones_lynx$cluster[i], nrow(meteo_lynx_i))
+
+  resultados_meteolynx[[i]] <- meteo_lynx_i
+
+  Sys.sleep(25)  # MUY importante para evitar error 429 (bloqueo API)
+}
+
+# unir todo
+library(dplyr)
+meteo_lynx_zonas_daily <- bind_rows(resultados_meteolynx)
+
+# guardar
+saveRDS(meteo_lynx_zonas_daily, "meteo_lynx_daily_by_zone_2008_2024.rds")
+write.csv(meteo_lynx_zonas_daily,"meteo_lynx_estacion.csv")
+
+```
+
+
+FASE 2: preparar fechas + estaciones
+```{r}
+# cargar datos
+lynx_obj3<- readRDS("meteo_lynx_daily_by_zone_2008_2024.rds")
+# añadir estación dependiendo de la fecha
+library(dplyr)
+library(lubridate)
+
+lynx_obj3 <- lynx_obj3 %>%
+  mutate(
+    md = format(date, "%m-%d"),
+    season = case_when(
+      md >= "03-20" & md < "06-21" ~ "Primavera",
+      md >= "06-21" & md < "09-23" ~ "Verano",
+      md >= "09-23" & md < "12-21" ~ "Otoño",
+      TRUE                         ~ "Invierno"
+    )
+  )
+
+```
+
+FASE 3: Estadística estacional
+```{r}
+lynx_obj3 <- lynx_obj3 %>%
+  mutate(year = lubridate::year(date))
+
+lynx_media_estacional <- lynx_obj3 %>%
+  group_by(year,season,cluster) %>%
+  summarise(
+    tmean = mean(tmean, na.rm = TRUE),
+    tmax  = mean(tmax,  na.rm = TRUE),
+    tmin  = mean(tmin,  na.rm = TRUE),
+    prec  = mean(prec,  na.rm = TRUE)
+  )
+```
+
+Resultado 1:
+evolución temporal por estación
+
+```{r}
+library(ggplot2)
+# TEMPERATURA MEDIA
+ggplot(lynx_media_estacional,
+       aes(x = year, y = tmean, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura media (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura media por estación"
+  ) +
+  theme_minimal()
+
+# TEMPERATURA MAXIMA
+ggplot(lynx_media_estacional,
+       aes(x = year, y = tmax, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura máxima (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura máxima por estación"
+  ) +
+  theme_minimal()
+
+# TEMPERATURA MINIMA
+ggplot(lynx_media_estacional,
+       aes(x = year, y = tmin, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura mínima (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura mínima por estación"
+  ) +
+  theme_minimal()
+
+# PRECIPITACIÓN MEDIA
+ggplot(lynx_media_estacional,
+       aes(x = year, y = prec, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "precipitación (mm)",
+    color = "Estación",
+    title = "Evolución de la precipitación media por estación"
+  ) +
+  theme_minimal()
+```
+
+
+------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------
+
+
+
+## 3.2 hábitat de Quebrantahuesos
+Pequeña limpieza de datos para OBJETIVO 3
+EXCLUIMOS los datos antes de 2007, porque resulta ser un error de ingresar datos, y sacamos las columnas que nos resultan interesantes.
+```{r}
+quebr_obj3 <- quebr_clean[quebr_clean$year > 2007,]
+# sacar solo las columnas que necesitamos
+quebr_obj3 <- quebr_obj3 %>%
+  select(
+    decimalLatitude,
+    decimalLongitude,
+    fecha_parseada
+  )
+# filtrar na por si acaso
+quebr_obj3 <- quebr_obj3 %>%
+  filter(
+    !is.na(decimalLatitude),
+    !is.na(decimalLongitude)
+  )
+```
+
+Cogemos las zonas ya segmentadas en el objetivo2, y calculamos un punto centroide (representante) para cada zona.
+```{r}
+library(sf)
+library(dplyr)
+
+zones_quebr <- quebr_sf_clusters %>%
+  group_by(cluster) %>%
+  summarise(
+    geometry = st_combine(geometry),
+    n_points = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    centroid = st_centroid(geometry),
+    lon = st_coordinates(centroid)[,1],
+    lat = st_coordinates(centroid)[,2]
+  )
+
+```
+
+
+FASE 1: descarga de datos meteológicos
+```{r,eval=FALSE}
+
+# función de descarga diaria para quebrantahuesos 
+library(httr)
+library(jsonlite)
+
+get_openmeteo_daily_quebr <- function(lat, lon, start_date, end_date) {
+
+  url <- "https://archive-api.open-meteo.com/v1/archive"
+
+  res <- GET(url, query = list(
+    latitude = lat,
+    longitude = lon,
+    start_date = start_date,
+    end_date   = end_date,
+    daily = paste(
+      c("temperature_2m_mean",
+        "temperature_2m_max",
+        "temperature_2m_min",
+        "precipitation_sum",
+        "wind_speed_10m_max",
+        "wind_direction_10m_dominant"),
+      collapse = ","
+    ),
+    timezone = "UTC"
+  ))
+
+  content <- fromJSON(rawToChar(res$content), simplifyDataFrame = TRUE)
+
+  # sacar los datos que nos interesa
+  
+  data.frame(
+    date = as.Date(content$daily$time),
+    tmean = content$daily$temperature_2m_mean,
+    tmax  = content$daily$temperature_2m_max,
+    tmin  = content$daily$temperature_2m_min,
+    prec  = content$daily$precipitation_sum,
+    wspeed = content$daily$wind_speed_10m_max,
+    wdir = content$daily$wind_direction_10m_dominant
+  )
+}
+
+# FIN DE LA FUNCIÓN
+# iterar por zonas
+# creamos una lista resultado para ir metiendo los resultados
+resultados_meteoquebr <- list()
+
+
+# para cada zona, aplicar la función meteo
+for (i in seq_len(nrow(zones_quebr))) {
+
+  cat("Procesando zona", zones_quebr$cluster[i], "\n")
+
+  meteo_quebr_i <- get_openmeteo_daily_quebr(
+    lat = zones_quebr$lat[i],
+    lon = zones_quebr$lon[i],
+    start_date = as.Date("2008-01-01"),
+    end_date   = as.Date("2024-12-31")
+  )
+
+  # etiqueta la zona
+  meteo_quebr_i$cluster <- rep(zones_quebr$cluster[i], nrow(meteo_quebr_i))
+
+  resultados_meteoquebr[[i]] <- meteo_quebr_i
+
+  Sys.sleep(25)  # MUY importante para evitar error 429 (bloqueo API)
+}
+
+# unir todo
+library(dplyr)
+meteo_quebr_zonas_daily <- bind_rows(resultados_meteoquebr)
+
+# guardar
+saveRDS(meteo_quebr_zonas_daily, "meteo_quebr_daily_by_zone_2008_2024.rds")
+write.csv(meteo_quebr_zonas_daily,"meteo_quebr_estacion.csv")
+
+```
+
+
+FASE 2: preparar fechas + estaciones
+```{r}
+# cargar datos
+quebr_obj3<- readRDS("meteo_quebr_daily_by_zone_2008_2024.rds")
+# añadir estación dependiendo de la fecha
+library(dplyr)
+library(lubridate)
+
+quebr_obj3 <- quebr_obj3 %>%
+  mutate(
+    md = format(date, "%m-%d"),
+    season = case_when(
+      md >= "03-20" & md < "06-21" ~ "Primavera",
+      md >= "06-21" & md < "09-23" ~ "Verano",
+      md >= "09-23" & md < "12-21" ~ "Otoño",
+      TRUE                         ~ "Invierno"
+    )
+  )
+
+```
+
+FASE 3: Estadística estacional
+```{r}
+quebr_obj3 <- quebr_obj3 %>%
+  mutate(year = lubridate::year(date))
+
+# para la dirección del viento, calcular media circular
+library(circular)
+
+mean_wdir <- function(x) {
+  x <- circular(x, units = "degrees", template = "geographics")
+  as.numeric(mean(x, na.rm = TRUE))
+}
+
+#######################
+
+# calcular una única variable meteológica para cada estación de cada año.
+quebr_media_estacional <- quebr_obj3 %>%
+  group_by(year,season,cluster) %>%
+  summarise(
+    tmean = mean(tmean, na.rm = TRUE),
+    tmax  = mean(tmax,  na.rm = TRUE),
+    tmin  = mean(tmin,  na.rm = TRUE),
+    prec  = mean(prec,  na.rm = TRUE),
+    wspeed = mean(wspeed, na.rm = TRUE),
+    wdir = mean_wdir(wdir),
+    .groups = "drop"
+
+  )
+```
+Resultado 1:
+
+Observamos que el cluster 1 tiene mayor número de avistamientos, con 14529 avistamientos.
+```{r}
+zones_quebr[order(-zones_quebr$n_points),]
+```
+
+Resultado 2:
+Graficar la evolución temporal por estación
+
+```{r}
+library(ggplot2)
+# TEMPERATURA MEDIA
+ggplot(quebr_media_estacional,
+       aes(x = year, y = tmean, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura media (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura media por estación"
+  ) +
+  theme_minimal()
+
+# TEMPERATURA MAXIMA
+ggplot(quebr_media_estacional,
+       aes(x = year, y = tmax, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura máxima (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura máxima por estación"
+  ) +
+  theme_minimal()
+
+# TEMPERATURA MINIMA
+ggplot(quebr_media_estacional,
+       aes(x = year, y = tmin, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura mínima (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura mínima por estación"
+  ) +
+  theme_minimal()
+
+# PRECIPITACIÓN MEDIA
+ggplot(quebr_media_estacional,
+       aes(x = year, y = prec, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "precipitación (mm)",
+    color = "Estación",
+    title = "Evolución de la precipitación media por estación"
+  ) +
+  theme_minimal()
+```
+```{r}
+library(tidyr)
+
+quebr_long <- quebr_media_estacional %>%
+  pivot_longer(
+    cols = c(tmean, tmax, tmin),
+    names_to = "variable",
+    values_to = "valor"
+  )
+
+ggplot(quebr_long,
+       aes(x = year, y = valor, color = variable)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ season) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura (°C)",
+    color = "Variable",
+    title = "Evolución térmica por estación"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(quebr_media_estacional,
+       aes(x = year, y = prec, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura media (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura media por estación"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# velocidad de viento
+ggplot(quebr_media_estacional,
+       aes(x = year, y = wspeed, color = season)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Velocidad del viento",
+    title = "Evolución de la velocidad del viento por estación"
+  ) +
+  theme_minimal()
+
+```
+
+
+```{r}
+# direccion de viento
+ggplot(quebr_media_estacional,
+       aes(x = season, y = wdir, fill = season)) +
+  geom_boxplot() +
+  facet_wrap(~ cluster) +
+  labs(
+    y = "Dirección del viento (grados)",
+    title = "Dirección del viento por estación"
+  ) +
+  theme_minimal()
+# velocidad de viento también
+ggplot(quebr_obj3, aes(x = wdir)) +
+  geom_histogram(binwidth = 30, fill = "steelblue") +
+  coord_polar(start = 0) +
+  facet_wrap(~ season) +
+  facet_wrap(~ cluster) +
+  labs(title = "Rosa de (dirección) viento por estación")
+
+```
+
+
+
+
+
