@@ -1,0 +1,1071 @@
+---
+title: "proy"
+author: "Proyii"
+date: "2026-03-05"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+# ------------------------------------------------------------
+# Chargement unique des librairies (fusion des deux fichiers)
+# ------------------------------------------------------------
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(lubridate)
+library(stringi)
+library(purrr)
+library(maps)
+library(sf)
+library(httr)
+library(jsonlite)
+library(leaflet)
+library(leaflet.extras)
+library(crosstalk)
+library(htmltools)
+library(htmlwidgets)
+library(knitr)
+library(scales)
+library(shiny)
+```
+
+
+```{r}
+sf_use_s2(FALSE)
+
+Lynx  <- read.csv("lince.csv",              sep = "\t", quote = "")
+Quebr <- read.csv("quebrantahuesos.csv",   sep = "\t", quote = "")
+
+```
+
+## 4. Limpieza de datos
+
+En esta sección se realiza la limpieza de los datos obtenidos de GBIF para ambas especies. El objetivo es construir una base homogénea y fiable para los análisis posteriores. Para ello, se aplican los mismos criterios de selección de variables, filtrado geográfico, revisión temporal y eliminación de duplicados en ambos conjuntos de datos.
+
+### 4.1 Limpieza del lince ibérico
+antes de todo, eliminamos los duplicados por gbif ID
+
+```{r}
+# ------------------------------------------------------------
+# Fonctions de limpieza actualizadas (compañero + simplificación)
+# ------------------------------------------------------------
+
+# 1. Parseo de fechas simplificado (reemplaza toda la parte de tipo_fecha)
+parse_gbif_dates <- function(df) {
+  df %>%
+    mutate(
+      eventDate = as.character(eventDate),
+      eventDate = str_replace_all(eventDate, "[^0-9TZ:/ -]", "-"),
+      eventDate = na_if(str_trim(eventDate), ""),
+      # Eliminar el sufijo Z (UTC) antes de parsear
+      eventDate_clean = str_remove(eventDate, "Z$"),
+      fecha_parseada = parse_date_time(
+        eventDate_clean,
+        orders = c("ymd HMS", "ymd HM", "ymd", "ym", "y"),
+        truncated = 1,
+        quiet = TRUE
+      ),
+      año = year(fecha_parseada),
+      mes = coalesce(month(fecha_parseada), 1L),
+      dia = coalesce(day(fecha_parseada), 1L)
+    ) %>%
+    select(-eventDate_clean)
+}
+
+# 2. Limpieza completa para una especie
+limpiar_gbif <- function(df) {
+  df %>%
+    # Columnas necesarias (incluye gbifID temporalmente)
+    select(
+      gbifID,
+      decimalLatitude, decimalLongitude,
+      eventDate, year, month, countryCode,
+      individualCount, stateProvince, locality
+    ) %>%
+    # España + Portugal
+    filter(!is.na(countryCode), countryCode %in% c("ES", "PT")) %>%
+    # Eliminar coordenadas (0,0)
+    filter(!(decimalLatitude == 0 & decimalLongitude == 0)) %>%
+    # Coordenadas válidas y dentro de la Península Ibérica
+    filter(
+      !is.na(decimalLatitude), !is.na(decimalLongitude),
+      between(decimalLatitude, 36.0, 43.9),
+      between(decimalLongitude, -9.5, 3.3)
+    ) %>%
+    # Limpiar fecha
+    mutate(eventDate = as.character(eventDate),
+           eventDate = na_if(str_trim(eventDate), "")) %>%
+    filter(!is.na(eventDate)) %>%
+    # Parseo simplificado
+    parse_gbif_dates() %>%
+    # Solo observaciones desde 1900
+    filter(año >= 1900) %>%
+    # Eliminar duplicados por gbifID (al final, como hace tu compañero)
+    distinct(gbifID, .keep_all = TRUE) %>%
+    # Quitar la columna gbifID
+    select(-gbifID)
+}
+
+lynx_clean  <- limpiar_gbif(Lynx)
+quebr_clean <- limpiar_gbif(Quebr)
+
+```
+
+
+### 4.3 Resumen de la limpieza
+
+En resumen, tras aplicar los filtros de selección, localización, calidad espacial, consistencia temporal y eliminación de duplicados, se obtienen dos conjuntos de datos más homogéneos y adecuados para el análisis. Esta depuración permite trabajar con observaciones comparables y reduce el efecto de registros incompletos o problemáticos.
+
+## 5. Objetivo 1. Visualización de avistamientos
+
+En este objetivo se analiza la evolución temporal y la distribución espacial de los avistamientos del lince ibérico y del quebrantahuesos en España durante los últimos 35 años.
+
+### 5.1 Evolución temporal
+
+En primer lugar, se analiza la evolución temporal del número de avistamientos en España durante el periodo 1990–2025. Se selecciona este intervalo porque se ajusta al horizonte temporal de 30–40 años planteado en el proyecto y permite evitar la influencia de registros demasiado antiguos y escasos.
+
+```{r}
+# ============================================================
+# Objectif 1 : Visualisation des observations (1990–2024)
+# ============================================================
+
+# Filtrer les données : 1990–2024, exclusion du Portugal (déjà filtré ES/PT avant, mais on garde)
+lynx_obj1  <- lynx_clean %>% filter(año >= 1990, año < 2025)
+quebr_obj1 <- quebr_clean %>% filter(año >= 1990, año < 2025)
+
+# ---- Évolution temporelle ----
+# Préparer les comptages annuels
+lynx_years <- as.data.frame(table(lynx_obj1$año))
+colnames(lynx_years) <- c("year", "n")
+lynx_years$year <- as.numeric(as.character(lynx_years$year))
+
+quebr_years <- as.data.frame(table(quebr_obj1$año))
+colnames(quebr_years) <- c("year", "n")
+quebr_years$year <- as.numeric(as.character(quebr_years$year))
+
+# Graphique initial (lynx – avant suppression de 2007)
+ggplot(lynx_years, aes(x = year, y = n)) +
+  geom_line() + geom_point() +
+  labs(title = "Lynx ibérique – observations par an (1990–2024, avec 2007)",
+       x = "Année", y = "Nombre") +
+  theme_minimal()
+```
+
+```{r}
+# Exclusion de 2007 pour le lynx
+lynx_obj1 <- lynx_obj1 %>% filter(año != 2007)
+lynx_years <- as.data.frame(table(lynx_obj1$año))
+colnames(lynx_years) <- c("year", "n")
+lynx_years$year <- as.numeric(as.character(lynx_years$year))
+
+# Graphique corrigé
+ggplot(lynx_years, aes(x = year, y = n)) +
+  geom_line() + geom_point() +
+  labs(title = "Lynx ibérique – observations par an (1990–2024, sans 2007)",
+       x = "Année", y = "Nombre") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(quebr_years, aes(x = year, y = n)) +
+  geom_line() + geom_point() +
+  labs(title = "Gypaète barbu – observations par an (1990–2024)",
+       x = "Année", y = "Nombre") +
+  theme_minimal()
+```
+
+En la serie temporal del lince ibérico se observa una tendencia general creciente en el número de avistamientos a lo largo del periodo analizado. Este aumento es especialmente visible a partir de la década de 2010.
+
+Sin embargo, destaca un pico muy pronunciado en un año concreto, con un número de observaciones muy superior al resto. Este comportamiento no parece corresponder a una evolución natural de la población, sino más bien a un efecto relacionado con la recopilación de datos, como la incorporación masiva de registros o campañas de observación intensiva.
+
+Por tanto, aunque existe una tendencia al alza, los resultados deben interpretarse con cautela debido a la posible influencia de este valor atípico.
+
+```{r}
+# Création des périodes (sans 2007 pour le lynx)
+lynx_obj1$period <- cut(
+  lynx_obj1$año,
+  breaks = c(1990, 2000, 2010, 2020, 2025),
+  labels = c("1990-1999", "2000-2009", "2010-2019", "2020-2024"),
+  right = FALSE
+)
+
+quebr_obj1$period <- cut(
+  quebr_obj1$año,
+  breaks = c(1990, 2000, 2010, 2020, 2025),
+  labels = c("1990-1999", "2000-2009", "2010-2019", "2020-2024"),
+  right = FALSE
+)
+
+# Carte de l'Espagne (une seule fois)
+spain_map <- map_data("world", region = "Spain")
+```
+
+En el caso del quebrantahuesos, se observa una tendencia claramente creciente en el número de avistamientos desde principios de los años 2000. Este incremento es progresivo y se intensifica especialmente en la última década.
+
+Este comportamiento puede reflejar tanto una mejora en el estado de conservación de la especie como un aumento en el esfuerzo de observación y en la disponibilidad de datos.
+
+Sin embargo, en los últimos años se aprecia una caída brusca en el número de registros. Este descenso no debe interpretarse como una disminución real de la población, sino probablemente como consecuencia de que los datos más recientes aún no están completamente incorporados en la base de datos.
+
+### 5.2 Distribución espacial
+
+Tras analizar la evolución temporal, se estudia a continuación la distribución espacial de los avistamientos. Para facilitar la interpretación, los registros se agrupan en cuatro periodos temporales en lugar de utilizar el año exacto como escala continua.
+
+La siguiente figura muestra la evolución temporal del número de avistamientos del lince ibérico en España.
+
+```{r}
+ggplot() +
+  geom_polygon(data = spain_map, aes(x = long, y = lat, group = group),
+               fill = "gray95", color = "black") +
+  geom_point(data = lynx_obj1, aes(x = decimalLongitude, y = decimalLatitude, color = period),
+             alpha = 0.5, size = 1) +
+  labs(title = "Lynx ibérique – distribution par période",
+       x = "Longitude", y = "Latitude", color = "Période") +
+  coord_fixed(1.3) + theme_minimal()
+
+ggplot() +
+  geom_polygon(data = spain_map, aes(x = long, y = lat, group = group),
+               fill = "gray95", color = "black") +
+  geom_point(data = quebr_obj1, aes(x = decimalLongitude, y = decimalLatitude, color = period),
+             alpha = 0.5, size = 1) +
+  labs(title = "Gypaète barbu – distribution par période",
+       x = "Longitude", y = "Latitude", color = "Période") +
+  coord_fixed(1.3) + theme_minimal()
+```
+
+A continuación se presenta la evolución temporal de los avistamientos del quebrantahuesos.
+
+
+En general, se observa que el lince ibérico presenta una distribución más concentrada en el sur de España, mientras que el quebrantahuesos se localiza principalmente en zonas montañosas del norte. Además, el número de observaciones aumenta en las últimas décadas, lo que puede reflejar tanto una mejora en la conservación como un aumento en la recopilación de datos.
+
+## 6 Objetivo 2.
+
+
+
+
+# ======================================================
+# OBJECTIVE 2: Analysis of the Impact of Protected Areas
+# ======================================================
+
+```{r}
+
+# ============================================================
+# OBJECTIF 2 – Impact des aires protégées
+# ============================================================
+
+# 1. Chargement / mise en cache des aires protégées
+processed_data_file <- "protected_areas_spain.rds"
+
+if (file.exists(processed_data_file)) {
+  protected_sf_spain <- readRDS(processed_data_file)
+} else {
+  poly0 <- st_read("poly0/WDPA_Apr2026_Public_shp-polygons.shp", quiet = TRUE)
+  poly1 <- st_read("poly1/WDPA_Apr2026_Public_shp-polygons.shp", quiet = TRUE)
+  poly2 <- st_read("poly2/WDPA_Apr2026_Public_shp-polygons.shp", quiet = TRUE)
+  
+  protected_sf_spain <- rbind(poly0, poly1, poly2) %>%
+    filter(ISO3 == "ESP")
+  
+  saveRDS(protected_sf_spain, processed_data_file)
+  rm(poly0, poly1, poly2)
+}
+
+# Simplification pour les cartes (une seule fois)
+protected_sf_map <- st_simplify(protected_sf_spain, dTolerance = 0.005)
+
+# 2. Création des objets sf à partir des données déjà filtrées (obj1)
+#    On garde les colonnes originales (remove = FALSE)
+lynx_sf <- st_as_sf(lynx_obj1, coords = c("decimalLongitude", "decimalLatitude"),
+                    crs = 4326, remove = FALSE)
+quebr_sf <- st_as_sf(quebr_obj1, coords = c("decimalLongitude", "decimalLatitude"),
+                     crs = 4326, remove = FALSE)
+
+# 3. Intersection avec les aires protégées
+lynx_sf$in_protected  <- lengths(st_intersects(lynx_sf, protected_sf_spain)) > 0
+quebr_sf$in_protected <- lengths(st_intersects(quebr_sf, protected_sf_spain)) > 0
+
+# 4. Version data frame pour les graphiques
+lynx_obj2  <- st_drop_geometry(lynx_sf)
+quebr_obj2 <- st_drop_geometry(quebr_sf)
+
+# ─── Graphiques d'évolution par zone ─────────────────────────
+plot_evolution <- function(df, species_name) {
+  df %>%
+    filter(año >= 1990) %>%
+    mutate(Zone = ifelse(in_protected, "Protégée", "Non protégée")) %>%
+    count(año, Zone, name = "count") %>%                    # count() plus court
+    complete(año = 1990:2024, Zone, fill = list(count = 0)) %>%  # ← AJOUTER CETTE LIGNE
+    ggplot(aes(x = año, y = count, color = Zone)) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    scale_color_manual(values = c("Protégée" = "#2E7D32", 
+                                   "Non protégée" = "#C62828")) +
+    labs(title = paste("Évolution des observations de", species_name),
+         x = "Année", y = "Nombre d'observations") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+plot_evolution(lynx_obj2, "Lynx ibérique")
+plot_evolution(quebr_obj2, "Gypaète barbu")
+
+# ─── Heatmap de croissance période à période ─────────────────
+target_years <- c(2007, 2010, 2013, 2018, 2020, 2021, 2022, 2023, 2024)
+
+prepare_period_data <- function(df, species_name) {
+  df %>%
+    filter(año %in% target_years) %>%
+    mutate(zone = ifelse(in_protected, "Protégée", "Non protégée")) %>%
+    group_by(año, zone) %>%
+    summarise(total = n(), .groups = "drop") %>%
+    complete(año = target_years, zone, fill = list(total = 0)) %>%
+    mutate(species = species_name)
+}
+
+combined <- bind_rows(
+  prepare_period_data(lynx_obj2, "Lynx ibérique"),
+  prepare_period_data(quebr_obj2, "Gypaète barbu")
+)
+
+heatmap_data <- combined %>%
+  group_by(species, zone) %>%
+  arrange(año) %>%
+  mutate(
+    prev_year  = lag(año),
+    prev_total = lag(total),
+    period     = paste0(prev_year, "-", año),
+    delta_pct  = ifelse(!is.na(prev_total) & prev_total >= 5,
+                        round((total - prev_total) / prev_total * 100, 1), NA),
+    label_text = case_when(
+      is.na(prev_total)  ~ "N/A",
+      prev_total < 5     ~ paste0(prev_total, " → ", total),
+      delta_pct > 0      ~ paste0("+", delta_pct, "%"),
+      TRUE               ~ paste0(delta_pct, "%")
+    )
+  ) %>%
+  filter(!is.na(period)) %>%
+  mutate(period = factor(period, levels = unique(period)))
+
+ggplot(heatmap_data, aes(x = period, y = zone, fill = delta_pct)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = label_text, color = is.na(delta_pct) | abs(delta_pct) < 50),
+            size = 3.5, fontface = "bold", show.legend = FALSE) +
+  scale_color_manual(values = c("TRUE" = "black", "FALSE" = "white")) +
+  facet_wrap(~ species, ncol = 1) +
+  scale_fill_gradient2(low = "#C62828", mid = "#FFF9C4", high = "#2E7D32",
+                       midpoint = 0, limits = c(-100, 150), oob = scales::squish,
+                       na.value = "grey90", name = "Croissance (%)") +
+  labs(title = "Changement période à période par zone",
+       x = "Période de comparaison", y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(face = "bold", size = 13),
+        panel.grid = element_blank())
+
+# ─── Proportion d'observations par zone ──────────────────────
+pct_data <- combined %>%
+  group_by(species, año) %>%
+  mutate(pct = round(total / sum(total) * 100, 1)) %>%
+  ungroup() %>%
+  filter(sum(total) > 0)
+
+ggplot(pct_data, aes(x = factor(año), y = pct, fill = zone)) +
+  geom_col(position = "fill", width = 0.7) +
+  geom_text(aes(label = ifelse(pct >= 8, paste0(pct, "%"), "")),
+            position = position_fill(vjust = 0.5), size = 3.2, fontface = "bold", color = "white") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("Protégée" = "#2E7D32", "Non protégée" = "#C62828"), name = NULL) +
+  facet_wrap(~ species, ncol = 1) +
+  labs(title = "Part des observations à l'intérieur/hors aires protégées",
+       x = "Année", y = "Proportion") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom", strip.text = element_text(face = "bold", size = 13),
+        panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# ─── Cartes interactives ─────────────────────────────────────
+# Utiliser directement lynx_sf / quebr_sf (objets sf)
+pal_lynx    <- colorFactor(c("#006d2c", "#e6550d"), domain = c(TRUE, FALSE))
+pal_vulture <- colorFactor(c("#2b8cbe", "#c51b8a"), domain = c(TRUE, FALSE))
+
+make_map <- function(sp_sf, species_name, pal, map_id) {
+  # Extraire les coordonnées et l'année
+  sp_data <- sp_sf %>%
+    filter(año >= 2000) %>%
+    mutate(
+      lng = st_coordinates(.)[, 1],
+      lat = st_coordinates(.)[, 2],
+      protected = in_protected
+    ) %>%
+    st_drop_geometry()
+  
+  click_js <- sprintf("
+    function(el, x) {
+      var map = this;
+      var coordBox = document.getElementById('coords-%s');
+      map.on('click', function(e) {
+        var lat = e.latlng.lat.toFixed(5);
+        var lng = e.latlng.lng.toFixed(5);
+        coordBox.innerHTML = '<b>Lat:</b> ' + lat + '&nbsp;&nbsp;<b>Lon:</b> ' + lng;
+      });
+    }", map_id)
+
+  tagList(
+    tags$div(
+      id = paste0("coords-", map_id),
+      style = "font-family: monospace; font-size: 13px; margin-bottom: 4px; padding: 4px 8px;
+               background: #f8f9fa; border-radius: 4px; display: inline-block;",
+      HTML("Cliquez sur la carte pour afficher les coordonnées")
+    ),
+    filter_slider(
+      paste0("year_slider_", map_id),
+      label = "Filtrer par année :",
+      sharedData = SharedData$new(sp_data, group = paste0(map_id, "_group")),
+      column = ~año,
+      step = 1,
+      sep = "",
+      width = "100%"
+    ),
+    leaflet(SharedData$new(sp_data, group = paste0(map_id, "_group")),
+            width = "100%", height = 500) %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      addPolygons(data = protected_sf_map, color = "#2ca25f", weight = 1,
+                  fillOpacity = 0.2, group = "Aires protégées", label = ~DESIG_ENG) %>%
+      addCircleMarkers(lng = ~lng, lat = ~lat, color = ~pal(protected),
+                       radius = 4, stroke = TRUE, weight = 1, fillOpacity = 0.85,
+                       popup = ~paste0("<b>", species_name, "</b> (", año, ")<br>",
+                                       "Statut : ", ifelse(protected, "Intérieur protégé", "Extérieur protégé"), "<br>",
+                                       round(lng, 4), ", ", round(lat, 4))) %>%
+      addLayersControl(overlayGroups = "Aires protégées",
+                       options = layersControlOptions(collapsed = FALSE)) %>%
+      addFullscreenControl(pseudoFullscreen = TRUE) %>%
+      addLegend(position = "bottomright", colors = c(pal(TRUE), pal(FALSE)),
+                labels = c("Intérieur protégé", "Extérieur protégé"),
+                title = species_name, opacity = 0.9) %>%
+      htmlwidgets::onRender(click_js)
+  )
+}
+
+map_lynx    <- make_map(lynx_sf,  "Lynx ibérique",    pal_lynx,    "lynx")
+map_vulture <- make_map(quebr_sf, "Gypaète barbu",    pal_vulture, "vulture")
+
+tagList(
+  tags$h4("Distribution spatiale – Aires protégées (années ≥ 2000)"),
+  tags$div(style = "margin-bottom: 40px;", map_lynx),
+  tags$div(style = "margin-bottom: 20px;", map_vulture)
+)
+
+```
+## 7 Objetivo 3.
+
+### 7.1 Estudio del hábitat - LYNX
+
+Para cada coordenada, en ese momento, sacar las variables meteológicas
+El API de OPENMETEO permite obtener variable meteológicas desde 1940-01-01 hasta la actualidad
+
+PASO1: para cada fecha, calcular un rango (inicio y fin de mes) mensual para OPENMETEO, en el que luego haremos la media mensual
+
+
+# ============================================================
+# OBJETIVO 3 – Variables meteológicos
+# ============================================================
+
+## 3.1 hábitat del lince ibérico
+
+Pequeña limpieza de datos para OBJETIVO 3
+EXCLUIMOS los datos antes de 2007, porque resulta ser un error de ingresar datos, y sacamos las columnas que nos resultan interesantes.
+```{r}
+lynx_obj3 <- lynx_clean[lynx_clean$year > 2007,]
+# sacar las columnas útiles
+lynx_obj3 <- lynx_obj3 %>%
+  select(
+    decimalLatitude,
+    decimalLongitude,
+    fecha_parseada
+  )
+# filtrar na
+lynx_obj3 <- lynx_obj3 %>%
+  filter(
+    !is.na(decimalLatitude),
+    !is.na(decimalLongitude)
+  )
+```
+
+Utilizamos las zonas clusterizadas del objetivo 2
+
+
+
+FASE 1: descarga de datos meteológicos
+una vez obtenemos los resultados, dejamos eval=FALSE para que no vuelva a llamar el API y trabajmos sobre el resultado guardado.
+ALREDEDOR DE 17años x 365 días x 82 zonas = 508810 filas
+```{r,eval=FALSE}
+
+
+# función de descarga diaria para lince
+library(httr)
+library(jsonlite)
+
+get_openmeteo_daily_lynx <- function(lat, lon, start_date, end_date) {
+
+  url <- "https://archive-api.open-meteo.com/v1/archive"
+
+  res <- GET(url, query = list(
+    latitude = lat,
+    longitude = lon,
+    start_date = start_date,
+    end_date   = end_date,
+    daily = paste(
+      c("temperature_2m_mean",
+        "temperature_2m_max",
+        "temperature_2m_min",
+        "precipitation_sum"),
+      collapse = ","
+    ),
+    timezone = "UTC"
+  ))
+
+  content <- fromJSON(rawToChar(res$content), simplifyDataFrame = TRUE)
+
+  data.frame(
+    date = as.Date(content$daily$time),
+    tmean = content$daily$temperature_2m_mean,
+    tmax  = content$daily$temperature_2m_max,
+    tmin  = content$daily$temperature_2m_min,
+    prec  = content$daily$precipitation_sum
+  )
+}
+# iterar por zonas 
+resultados_meteo <- list()
+
+for (i in seq_len(nrow(zones))) {
+
+  cat("Procesando zona", zones$zone[i], "\n")
+
+  meteo_lynx_i <- get_openmeteo_daily_lynx(
+    lat = zones$lat[i],
+    lon = zones$lon[i],
+    start_date = as.Date("2008-01-01"),
+    end_date   = as.Date("2024-12-31")
+  )
+
+  # etiqueta la zona
+  meteo_lynx_i$zone <- rep(zones$zone[i], nrow(meteo_lynx_i))
+
+  resultados_meteo[[i]] <- meteo_lynx_i
+
+  Sys.sleep(5)  # MUY importante para evitar error 429 (bloqueo API)
+}
+
+# unir todo
+library(dplyr)
+meteo_lynx_zonas_daily <- bind_rows(resultados_meteo)
+# guardar
+saveRDS(meteo_lynx_zonas_daily, "meteo_lynx_daily_by_zone_2008_2024.rds")
+write.csv(meteo_lynx_zonas_daily,"meteo_lynx_estacion.csv")
+
+```
+
+
+```{r,eval=FALSE}
+meteo_lynx_zonas_daily %>%
+  group_by(zone) %>%
+  summarise(n_days = n(), .groups = "drop")
+```
+
+
+
+
+```{r}
+test <- GET(
+  "https://archive-api.open-meteo.com/v1/archive",
+  query = list(
+    latitude = 38,
+    longitude = -4,
+    start_date = "2008-01-01",
+    end_date   = "2008-01-15",
+    daily = "temperature_2m_mean",
+    timezone = "UTC"
+  )
+)
+
+print(test$status_code)
+cat(rawToChar(test$content))
+
+
+```
+
+
+
+
+
+-------------------------------------------------------------------------------------------
+
+
+FASE 2: preparar fechas + estaciones
+```{r}
+# cargar datos
+lynx_obj3<- readRDS("meteo_lynx_daily_by_zone_2008_2024.rds")
+# añadir estación dependiendo de la fecha
+library(dplyr)
+library(lubridate)
+
+
+
+lynx_obj3 <- lynx_obj3 %>%
+  mutate(
+    md = format(date, "%m-%d"),
+    season = case_when(
+      md >= "03-20" & md < "06-21" ~ "Primavera",
+      md >= "06-21" & md < "09-23" ~ "Verano",
+      md >= "09-23" & md < "12-21" ~ "Otoño",
+      TRUE                         ~ "Invierno"
+    )
+  )
+
+```
+
+FASE 3: Estadística estacional
+```{r}
+lynx_obj3 <- lynx_obj3 %>%
+  mutate(year = lubridate::year(date))
+
+lynx_media_estacional <- lynx_obj3 %>%
+  group_by(year,season) %>%
+  summarise(
+    tmean = mean(tmean, na.rm = TRUE),
+    tmax  = mean(tmax,  na.rm = TRUE),
+    tmin  = mean(tmin,  na.rm = TRUE),
+    prec  = mean(prec,  na.rm = TRUE)
+  )
+```
+
+Resultado 1:
+
+
+```{r}
+
+top20_zonas <- zones %>%
+  arrange(desc(n_points)) %>%
+  slice_head(n = 20)
+
+ggplot(top20_zonas,
+       aes(x = reorder(factor(zone), n_points), y = n_points)) +
+  geom_col(fill = "darkorange") +
+  coord_flip() +
+  labs(
+    x = "Zona",
+    y = "Número de puntos",
+    title = "Top 20 zonas con más avistamientos"
+  ) +
+  theme_minimal()
+
+```
+
+Resultado 2:
+evolución temporal por estación
+
+```{r}
+library(ggplot2)
+# TEMPERATURA MEDIA
+ggplot(lynx_media_estacional,
+       aes(x = year, y = tmean, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    x = "Año",
+    y = "Temperatura media (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura media por estación"
+  ) +
+  theme_minimal()
+
+# TEMPERATURA MAXIMA
+ggplot(lynx_media_estacional,
+       aes(x = year, y = tmax, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    x = "Año",
+    y = "Temperatura máxima (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura máxima por estación"
+  ) +
+  theme_minimal()
+
+# TEMPERATURA MINIMA
+ggplot(lynx_media_estacional,
+       aes(x = year, y = tmin, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    x = "Año",
+    y = "Temperatura mínima (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura mínima por estación"
+  ) +
+  theme_minimal()
+
+# PRECIPITACIÓN MEDIA
+ggplot(lynx_media_estacional,
+       aes(x = year, y = prec, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    x = "Año",
+    y = "precipitación (mm)",
+    color = "Estación",
+    title = "Evolución de la precipitación media por estación"
+  ) +
+  theme_minimal()
+```
+```{r}
+library(tidyr)
+
+lynx_long <- lynx_media_estacional %>%
+  pivot_longer(
+    cols = c(tmean, tmax, tmin),
+    names_to = "variable",
+    values_to = "valor"
+  )
+
+ggplot(lynx_long,
+       aes(x = year, y = valor, color = variable)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ season) +
+  labs(
+    x = "Año",
+    y = "Temperatura (°C)",
+    color = "Variable",
+    title = "Evolución térmica por estación"
+  ) +
+  theme_minimal()
+```
+
+
+## 3.2 Quebrantahuesos
+Pequeña limpieza de datos para OBJETIVO 3
+EXCLUIMOS los datos antes de 2007, porque resulta ser un error de ingresar datos, y sacamos las columnas que nos resultan interesantes.
+```{r}
+quebr_obj3 <- quebr_clean[quebr_clean$year > 2007,]
+# sacar solo las columnas que necesitamos
+quebr_obj3 <- quebr_obj3 %>%
+  select(
+    decimalLatitude,
+    decimalLongitude,
+    fecha_parseada
+  )
+# filtrar na por si acaso
+quebr_obj3 <- quebr_obj3 %>%
+  filter(
+    !is.na(decimalLatitude),
+    !is.na(decimalLongitude)
+  )
+```
+
+CLUSTERIZACIÓN POR ZONAS
+Cogemos las zonas ya clusterizadas en el objetivo2, y calculamos un punto centroide (representante) para cada zona.
+```{r}
+library(sf)
+library(dplyr)
+
+zones_quebr <- quebr_sf_clusters %>%
+  group_by(cluster) %>%
+  summarise(
+    geometry = st_combine(geometry),
+    n_points = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    centroid = st_centroid(geometry),
+    lon = st_coordinates(centroid)[,1],
+    lat = st_coordinates(centroid)[,2]
+  )
+
+```
+
+
+
+
+FASE 1: descarga de datos meteológicos
+```{r,eval=FALSE}
+
+# función de descarga diaria para quebrantahuesos 
+library(httr)
+library(jsonlite)
+
+get_openmeteo_daily_quebr <- function(lat, lon, start_date, end_date) {
+
+  url <- "https://archive-api.open-meteo.com/v1/archive"
+
+  res <- GET(url, query = list(
+    latitude = lat,
+    longitude = lon,
+    start_date = start_date,
+    end_date   = end_date,
+    daily = paste(
+      c("temperature_2m_mean",
+        "temperature_2m_max",
+        "temperature_2m_min",
+        "precipitation_sum",
+        "wind_speed_10m_max",
+        "wind_direction_10m_dominant"),
+      collapse = ","
+    ),
+    timezone = "UTC"
+  ))
+
+  content <- fromJSON(rawToChar(res$content), simplifyDataFrame = TRUE)
+
+  # sacar los datos que nos interesa
+  
+  data.frame(
+    date = as.Date(content$daily$time),
+    tmean = content$daily$temperature_2m_mean,
+    tmax  = content$daily$temperature_2m_max,
+    tmin  = content$daily$temperature_2m_min,
+    prec  = content$daily$precipitation_sum,
+    wspeed = content$daily$wind_speed_10m_max,
+    wdir = content$daily$wind_direction_10m_dominant
+  )
+}
+
+# FIN DE LA FUNCIÓN
+# iterar por zonas
+# creamos una lista resultado para ir metiendo los resultados
+resultados_meteoquebr <- list()
+
+
+# para cada zona, aplicar la función meteo
+for (i in seq_len(nrow(zones_quebr))) {
+
+  cat("Procesando zona", zones_quebr$cluster[i], "\n")
+
+  meteo_quebr_i <- get_openmeteo_daily_quebr(
+    lat = zones_quebr$lat[i],
+    lon = zones_quebr$lon[i],
+    start_date = as.Date("2008-01-01"),
+    end_date   = as.Date("2024-12-31")
+  )
+
+  # etiqueta la zona
+  meteo_quebr_i$cluster <- rep(zones_quebr$cluster[i], nrow(meteo_quebr_i))
+
+  resultados_meteoquebr[[i]] <- meteo_quebr_i
+
+  Sys.sleep(25)  # MUY importante para evitar error 429 (bloqueo API)
+}
+
+# unir todo
+library(dplyr)
+meteo_quebr_zonas_daily <- bind_rows(resultados_meteoquebr)
+
+# guardar
+saveRDS(meteo_quebr_zonas_daily, "meteo_quebr_daily_by_zone_2008_2024.rds")
+write.csv(meteo_quebr_zonas_daily,"meteo_quebr_estacion.csv")
+
+```
+
+
+FASE 2: preparar fechas + estaciones
+```{r}
+# cargar datos
+quebr_obj3<- readRDS("meteo_quebr_daily_by_zone_2008_2024.rds")
+# añadir estación dependiendo de la fecha
+library(dplyr)
+library(lubridate)
+
+
+quebr_obj3 <- quebr_obj3 %>%
+  mutate(
+    md = format(date, "%m-%d"),
+    season = case_when(
+      md >= "03-20" & md < "06-21" ~ "Primavera",
+      md >= "06-21" & md < "09-23" ~ "Verano",
+      md >= "09-23" & md < "12-21" ~ "Otoño",
+      TRUE                         ~ "Invierno"
+    )
+  )
+
+```
+
+FASE 3: Estadística estacional
+```{r}
+quebr_obj3 <- quebr_obj3 %>%
+  mutate(year = lubridate::year(date))
+
+# para la dirección del viento, calcular media circular
+library(circular)
+
+mean_wdir <- function(x) {
+  x <- circular(x, units = "degrees", template = "geographics")
+  as.numeric(mean(x, na.rm = TRUE))
+}
+
+#######################
+
+# calcular una única variable meteológica para cada estación de cada año.
+quebr_media_estacional <- quebr_obj3 %>%
+  group_by(year,season,cluster) %>%
+  summarise(
+    tmean = mean(tmean, na.rm = TRUE),
+    tmax  = mean(tmax,  na.rm = TRUE),
+    tmin  = mean(tmin,  na.rm = TRUE),
+    prec  = mean(prec,  na.rm = TRUE),
+    wspeed = mean(wspeed, na.rm = TRUE),
+    wdir = mean_wdir(wdir),
+    .groups = "drop"
+
+  )
+```
+Resultado 1:
+
+Observamos que el cluster 1 tiene mayor número de avistamientos, con 14529 avistamientos.
+```{r}
+zones_quebr[order(-zones_quebr$n_points),]
+```
+
+Resultado 2:
+Graficar la evolución temporal por estación
+
+```{r}
+library(ggplot2)
+# TEMPERATURA MEDIA
+ggplot(quebr_media_estacional,
+       aes(x = year, y = tmean, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura media (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura media por estación"
+  ) +
+  theme_minimal()
+
+# TEMPERATURA MAXIMA
+ggplot(quebr_media_estacional,
+       aes(x = year, y = tmax, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura máxima (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura máxima por estación"
+  ) +
+  theme_minimal()
+
+# TEMPERATURA MINIMA
+ggplot(quebr_media_estacional,
+       aes(x = year, y = tmin, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura mínima (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura mínima por estación"
+  ) +
+  theme_minimal()
+
+# PRECIPITACIÓN MEDIA
+ggplot(quebr_media_estacional,
+       aes(x = year, y = prec, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "precipitación (mm)",
+    color = "Estación",
+    title = "Evolución de la precipitación media por estación"
+  ) +
+  theme_minimal()
+```
+```{r}
+library(tidyr)
+
+quebr_long <- quebr_media_estacional %>%
+  pivot_longer(
+    cols = c(tmean, tmax, tmin),
+    names_to = "variable",
+    values_to = "valor"
+  )
+
+ggplot(quebr_long,
+       aes(x = year, y = valor, color = variable)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ season) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura (°C)",
+    color = "Variable",
+    title = "Evolución térmica por estación"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(quebr_media_estacional,
+       aes(x = year, y = prec, color = season, group = season)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Temperatura media (°C)",
+    color = "Estación",
+    title = "Evolución de la temperatura media por estación"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# velocidad de viento
+ggplot(quebr_media_estacional,
+       aes(x = year, y = wspeed, color = season)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ cluster) +
+  labs(
+    x = "Año",
+    y = "Velocidad del viento",
+    title = "Evolución de la velocidad del viento por estación"
+  ) +
+  theme_minimal()
+
+```
+
+
+```{r}
+# direccion de viento
+ggplot(quebr_media_estacional,
+       aes(x = season, y = wdir, fill = season)) +
+  geom_boxplot() +
+  facet_wrap(~ cluster) +
+  labs(
+    y = "Dirección del viento (grados)",
+    title = "Dirección del viento por estación"
+  ) +
+  theme_minimal()
+# velocidad de viento también
+ggplot(quebr_obj3, aes(x = wdir)) +
+  geom_histogram(binwidth = 30, fill = "steelblue") +
+  coord_polar(start = 0) +
+  facet_wrap(~ season) +
+  facet_wrap(~ cluster) +
+  labs(title = "Rosa de (dirección) viento por estación")
+
+```
+
+
+
