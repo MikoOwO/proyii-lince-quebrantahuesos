@@ -39,8 +39,8 @@ library(shiny)
 ```{r}
 sf_use_s2(FALSE)
 
-Lynx  <- read.csv("lince.csv",              sep = "\t", quote = "")
-Quebr <- read.csv("quebrantahuesos.csv",   sep = "\t", quote = "")
+Lynx  <- read.csv("Lynx.csv",              sep = "\t", quote = "")
+Quebr <- read.csv("Quebrantahuesos.csv",   sep = "\t", quote = "")
 
 ```
 
