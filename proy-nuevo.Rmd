@@ -268,12 +268,31 @@ if (file.exists(processed_data_file)) {
   poly1 <- st_read("poly1/WDPA_Apr2026_Public_shp-polygons.shp", quiet = TRUE)
   poly2 <- st_read("poly2/WDPA_Apr2026_Public_shp-polygons.shp", quiet = TRUE)
   
+  
+      # Diagnostic : où se trouve l'Espagne ?
+  cat("\n--- DIAGNOSTIC DES FICHIERS WDPA ---\n")
+  for (nom in c("poly0", "poly1", "poly2")) {
+    nb <- sum(get(nom)$ISO3 == "ESP", na.rm = TRUE)
+    if (nb > 0) {
+      cat(" ✔ ", nom, " contient ", nb, " polygone(s) espagnol(s)\n", sep = "")
+    } else {
+      cat(" ✖ ", nom, " ne contient aucun polygone espagnol\n", sep = "")
+    }
+  }
+  cat("-------------------------------------\n")
+  
+  
   protected_sf_spain <- rbind(poly0, poly1, poly2) %>%
     filter(ISO3 == "ESP")
   
   saveRDS(protected_sf_spain, processed_data_file)
   rm(poly0, poly1, poly2)
+  
+
+
 }
+
+
 
 # Simplification pour les cartes (une seule fois)
 protected_sf_map <- st_simplify(protected_sf_spain, dTolerance = 0.005)
@@ -281,32 +300,78 @@ protected_sf_map <- st_simplify(protected_sf_spain, dTolerance = 0.005)
 
 
 ```{r}
-```
+# ============================================================
+# OBJECTIF 2 – Impact des aires protégées (avec prise en compte
+#               de l’année de création des aires)
+# ============================================================
 
-
-```{r}
-# 2. Création des objets sf à partir des données déjà filtrées (obj1)
-#    On garde les colonnes originales (remove = FALSE)
+# 2. Création des objets sf des observations
 lynx_sf <- st_as_sf(lynx_obj1, coords = c("decimalLongitude", "decimalLatitude"),
                     crs = 4326, remove = FALSE)
 quebr_sf <- st_as_sf(quebr_obj1, coords = c("decimalLongitude", "decimalLatitude"),
                      crs = 4326, remove = FALSE)
 
-# 3. Intersection avec les aires protégées
-lynx_sf$in_protected  <- lengths(st_intersects(lynx_sf, protected_sf_spain)) > 0
-quebr_sf$in_protected <- lengths(st_intersects(quebr_sf, protected_sf_spain)) > 0
+# 3. Fonction pour déterminer si un point est dans une aire protégée
+#    qui existait l’année de l’observation
+in_protected_by_year <- function(points_sf, protected_sf) {
+  # points_sf doit contenir une colonne año
+  # protected_sf doit contenir STATUS_YR (0 ou NA = toujours existante)
+  
+  # Remplacer les STATUS_YR manquants ou nuls par 0
+  protected_sf <- protected_sf %>%
+    mutate(STATUS_YR = ifelse(is.na(STATUS_YR) | STATUS_YR == 0, 0, STATUS_YR))
+  
+  # Initialiser le résultat à FALSE
+  points_sf$in_protected <- FALSE
+  
+  # Boucler sur les années uniques
+  for (yr in unique(points_sf$año)) {
+    # Aire protégées existantes l'année yr
+    prot_existing <- protected_sf %>% filter(STATUS_YR <= yr)
+    if (nrow(prot_existing) == 0) next
+    
+    # Indices des points de cette année
+    idx <- which(points_sf$año == yr)
+    # Intersection avec les aires existantes
+    inter <- lengths(st_intersects(points_sf[idx, ], prot_existing)) > 0
+    points_sf$in_protected[idx] <- inter
+  }
+  points_sf
+}
+
+# 3. Intersection with protected areas (with caching to avoid recomputation)
+lynx_cache <- "lynx_sf_protected.rds"
+quebr_cache <- "quebr_sf_protected.rds"
+
+if (file.exists(lynx_cache)) {
+  lynx_sf <- readRDS(lynx_cache)
+  message("Lynx spatial data with protection status loaded from cache.")
+} else {
+  lynx_sf <- in_protected_by_year(lynx_sf, protected_sf_spain)
+  saveRDS(lynx_sf, lynx_cache)
+  message("Lynx protection status computed and cached.")
+}
+
+if (file.exists(quebr_cache)) {
+  quebr_sf <- readRDS(quebr_cache)
+  message("Bearded vulture spatial data with protection status loaded from cache.")
+} else {
+  quebr_sf <- in_protected_by_year(quebr_sf, protected_sf_spain)
+  saveRDS(quebr_sf, quebr_cache)
+  message("Bearded vulture protection status computed and cached.")
+}
 
 # 4. Version data frame pour les graphiques
 lynx_obj2  <- st_drop_geometry(lynx_sf)
 quebr_obj2 <- st_drop_geometry(quebr_sf)
 
-# ─── Graphiques d'évolution par zone ─────────────────────────
+# ─── Graphiques d'évolution par zone (inchangé) ─────────────
 plot_evolution <- function(df, species_name) {
   df %>%
     filter(año >= 1990) %>%
     mutate(Zone = ifelse(in_protected, "Protégée", "Non protégée")) %>%
-    count(año, Zone, name = "count") %>%                    # count() plus court
-    complete(año = 1990:2024, Zone, fill = list(count = 0)) %>%  # ← AJOUTER CETTE LIGNE
+    count(año, Zone, name = "count") %>%
+    complete(año = 1990:2024, Zone, fill = list(count = 0)) %>%
     ggplot(aes(x = año, y = count, color = Zone)) +
     geom_line(linewidth = 1) +
     geom_point(size = 2) +
@@ -321,7 +386,7 @@ plot_evolution <- function(df, species_name) {
 plot_evolution(lynx_obj2, "Lynx ibérique")
 plot_evolution(quebr_obj2, "Gypaète barbu")
 
-# ─── Heatmap de croissance période à période ─────────────────
+# ─── Heatmap de croissance période à période (inchangé) ─────
 target_years <- c(2007, 2010, 2013, 2018, 2020, 2021, 2022, 2023, 2024)
 
 prepare_period_data <- function(df, species_name) {
@@ -374,7 +439,7 @@ ggplot(heatmap_data, aes(x = period, y = zone, fill = delta_pct)) +
         strip.text = element_text(face = "bold", size = 13),
         panel.grid = element_blank())
 
-# ─── Proportion d'observations par zone ──────────────────────
+# ─── Proportion d'observations par zone (inchangé) ─────────
 pct_data <- combined %>%
   group_by(species, año) %>%
   mutate(pct = round(total / sum(total) * 100, 1)) %>%
@@ -394,14 +459,22 @@ ggplot(pct_data, aes(x = factor(año), y = pct, fill = zone)) +
   theme(legend.position = "bottom", strip.text = element_text(face = "bold", size = 13),
         panel.grid.major.x = element_blank(),
         axis.text.x = element_text(angle = 45, hjust = 1))
+# ─── Cartes interactives (time‑aware protected areas) ─────────
 
-# ─── Cartes interactives ─────────────────────────────────────
-# Utiliser directement lynx_sf / quebr_sf (objets sf)
+# Prepare protected areas with their status year
+# (use the same protected_sf_map but keep STATUS_YR)
+protected_sf_map <- protected_sf_spain %>%
+  st_simplify(dTolerance = 0.005) %>%
+  mutate(
+    status_yr = ifelse(is.na(STATUS_YR) | STATUS_YR == 0, 0, STATUS_YR)
+  )
+
+# Color palettes (unchanged)
 pal_lynx    <- colorFactor(c("#006d2c", "#e6550d"), domain = c(TRUE, FALSE))
 pal_vulture <- colorFactor(c("#2b8cbe", "#c51b8a"), domain = c(TRUE, FALSE))
 
 make_map <- function(sp_sf, species_name, pal, map_id) {
-  # Extraire les coordonnées et l'année
+  # Extract coordinates and year
   sp_data <- sp_sf %>%
     filter(año >= 2000) %>%
     mutate(
@@ -411,6 +484,7 @@ make_map <- function(sp_sf, species_name, pal, map_id) {
     ) %>%
     st_drop_geometry()
   
+  # JavaScript to capture click coordinates
   click_js <- sprintf("
     function(el, x) {
       var map = this;
@@ -422,13 +496,54 @@ make_map <- function(sp_sf, species_name, pal, map_id) {
       });
     }", map_id)
 
+  # JavaScript to filter protected areas when the year slider changes
+  filter_js <- sprintf("
+    function(el, x) {
+      // Find the slider for this map
+      var sliderId = 'year_slider_%s';
+      var slider = document.getElementById(sliderId);
+      if (!slider) return;
+      
+      // Function to update the polygons based on the current slider value
+      function updatePolys(year) {
+        // The protected areas are stored in the geojson layer
+        x.eachLayer(function(layer) {
+          if (layer.feature && layer.feature.properties.status_yr !== undefined) {
+            var status = layer.feature.properties.status_yr;
+            // Show layer if it existed in that year (status=0 means always existed)
+            if (status === 0 || status <= year) {
+              layer.setStyle({fillOpacity: 0.2, opacity: 1});
+            } else {
+              layer.setStyle({fillOpacity: 0, opacity: 0});
+            }
+          }
+        });
+      }
+      
+      // Initial update with the default slider value
+      updatePolys(slider.value);
+      
+      // Listen for changes on the slider
+      slider.addEventListener('input', function(e) {
+        updatePolys(e.target.value);
+      });
+      
+      // Also listen for the crosstalk filter event (triggered by the slider)
+      // This may be needed if the slider is generated by Crosstalk
+      slider.addEventListener('change', function(e) {
+        updatePolys(e.target.value);
+      });
+    }", map_id)
+
   tagList(
+    # Coordinate display
     tags$div(
       id = paste0("coords-", map_id),
       style = "font-family: monospace; font-size: 13px; margin-bottom: 4px; padding: 4px 8px;
                background: #f8f9fa; border-radius: 4px; display: inline-block;",
       HTML("Cliquez sur la carte pour afficher les coordonnées")
     ),
+    # Year slider
     filter_slider(
       paste0("year_slider_", map_id),
       label = "Filtrer par année :",
@@ -438,23 +553,49 @@ make_map <- function(sp_sf, species_name, pal, map_id) {
       sep = "",
       width = "100%"
     ),
+    # Leaflet map
     leaflet(SharedData$new(sp_data, group = paste0(map_id, "_group")),
             width = "100%", height = 500) %>%
       addProviderTiles(providers$CartoDB.Positron) %>%
-      addPolygons(data = protected_sf_map, color = "#2ca25f", weight = 1,
-                  fillOpacity = 0.2, group = "Aires protégées", label = ~DESIG_ENG) %>%
-      addCircleMarkers(lng = ~lng, lat = ~lat, color = ~pal(protected),
-                       radius = 4, stroke = TRUE, weight = 1, fillOpacity = 0.85,
-                       popup = ~paste0("<b>", species_name, "</b> (", año, ")<br>",
-                                       "Statut : ", ifelse(protected, "Intérieur protégé", "Extérieur protégé"), "<br>",
-                                       round(lng, 4), ", ", round(lat, 4))) %>%
-      addLayersControl(overlayGroups = "Aires protégées",
-                       options = layersControlOptions(collapsed = FALSE)) %>%
+      # Add protected areas as geojson with status_yr property
+      addPolygons(
+        data = protected_sf_map,
+        color = "#2ca25f",
+        weight = 1,
+        fillOpacity = 0.2,
+        group = "Aires protégées",
+        label = ~paste0(DESIG_ENG, " (", 
+                        ifelse(status_yr == 0, "toujours existante", 
+                               paste("créée en", status_yr)), ")"),
+        popup = ~paste0("<b>", DESIG_ENG, "</b><br>Statut: ",
+                        ifelse(status_yr == 0, "toujours existante", 
+                               paste("créée en", status_yr))),
+        options = pathOptions(className = "protected-area")
+      ) %>%
+      # Add observation points
+      addCircleMarkers(
+        lng = ~lng, lat = ~lat, color = ~pal(protected),
+        radius = 4, stroke = TRUE, weight = 1, fillOpacity = 0.85,
+        popup = ~paste0("<b>", species_name, "</b> (", año, ")<br>",
+                        "Statut : ", ifelse(protected, "Intérieur protégé", "Extérieur protégé"), "<br>",
+                        round(lng, 4), ", ", round(lat, 4))
+      ) %>%
+      addLayersControl(
+        overlayGroups = "Aires protégées",
+        options = layersControlOptions(collapsed = FALSE)
+      ) %>%
       addFullscreenControl(pseudoFullscreen = TRUE) %>%
-      addLegend(position = "bottomright", colors = c(pal(TRUE), pal(FALSE)),
-                labels = c("Intérieur protégé", "Extérieur protégé"),
-                title = species_name, opacity = 0.9) %>%
-      htmlwidgets::onRender(click_js)
+      addLegend(
+        position = "bottomright",
+        colors = c(pal(TRUE), pal(FALSE)),
+        labels = c("Intérieur protégé", "Extérieur protégé"),
+        title = species_name,
+        opacity = 0.9
+      ) %>%
+      # Apply the click coordinate capture
+      htmlwidgets::onRender(click_js) %>%
+      # Apply the time filtering of protected areas
+      htmlwidgets::onRender(filter_js)
   )
 }
 
@@ -463,6 +604,7 @@ map_vulture <- make_map(quebr_sf, "Gypaète barbu",    pal_vulture, "vulture")
 
 tagList(
   tags$h4("Distribution spatiale – Aires protégées (années ≥ 2000)"),
+  tags$p("Déplacez le curseur pour voir uniquement les aires protégées existant l'année sélectionnée."),
   tags$div(style = "margin-bottom: 40px;", map_lynx),
   tags$div(style = "margin-bottom: 20px;", map_vulture)
 )
@@ -690,6 +832,103 @@ leaflet() %>%
     values = lynx_sf_clusters$cluster,
     title = "Zones Lynx"
   )
+
+```
+
+```{r}
+
+# ============================================================
+# Geographic statistics: % of zone area covered by protected areas
+# ============================================================
+
+# --- LYNX: use lynx_polygons from DBSCAN section ---
+cat("\n========== LYNX – Zone area vs. protected area ==========\n")
+
+# Compute zone areas in km²
+lynx_zone_area <- lynx_polygons %>%
+  mutate(zone_area_km2 = as.numeric(st_area(.)) / 1e6)
+
+# Merge all protected areas into a single multipolygon (avoids double-counting overlaps)
+
+
+if (file.exists("protected_union.rds")) {
+  protected_union <- readRDS("protected_union.rds")
+  message("protected_union loaded from cache.")
+} else {
+  protected_union <- st_union(protected_sf_spain)
+  saveRDS(protected_union, "protected_union.rds")
+  message("protected_union computed and cached.")
+}
+
+# Intersect each zone with the unified protected area
+lynx_intersection <- st_intersection(lynx_zone_area, protected_union)
+
+# Calculate protected area per zone (single geometry per zone, no duplicates)
+lynx_zone_stats <- lynx_zone_area %>%
+  left_join(
+    lynx_intersection %>%
+      mutate(protected_area_km2 = as.numeric(st_area(.)) / 1e6) %>%
+      st_drop_geometry() %>%
+      select(cluster, protected_area_km2),
+    by = "cluster"
+  ) %>%
+  mutate(
+    protected_area_km2 = coalesce(protected_area_km2, 0),
+    pct_protected_area = round(protected_area_km2 / zone_area_km2 * 100, 1),
+    pct_unprotected_area = 100 - pct_protected_area
+  ) %>%
+  st_drop_geometry() %>%
+  select(cluster, zone_area_km2, protected_area_km2, pct_protected_area, pct_unprotected_area) %>%
+  arrange(desc(zone_area_km2))
+
+knitr::kable(lynx_zone_stats,
+             col.names = c("Zone", "Total area (km²)", "Protected area (km²)",
+                           "% Protected", "% Unprotected"),
+             caption = "Percentage of zone area covered by protected areas – Lynx")
+
+# --- GYPAÈTE: create polygons for final zones (including subdivisions) ---
+cat("\n========== GYPAÈTE – Zone area vs. protected area ==========\n")
+
+# Use quebr_obj1 with final_zone (created earlier)
+quebr_sf_final <- quebr_obj1 %>%
+  filter(!is.na(final_zone)) %>%
+  st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)
+
+# Convex hulls per final zone
+quebr_polygons_final <- quebr_sf_final %>%
+  group_by(final_zone) %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_convex_hull()
+
+# Zone areas
+quebr_zone_area <- quebr_polygons_final %>%
+  mutate(zone_area_km2 = as.numeric(st_area(.)) / 1e6)
+
+# Intersect with unified protected area
+quebr_intersection <- st_intersection(quebr_zone_area, protected_union)
+
+# Combine and compute percentages
+quebr_zone_stats <- quebr_zone_area %>%
+  left_join(
+    quebr_intersection %>%
+      mutate(protected_area_km2 = as.numeric(st_area(.)) / 1e6) %>%
+      st_drop_geometry() %>%
+      select(final_zone, protected_area_km2),
+    by = "final_zone"
+  ) %>%
+  mutate(
+    protected_area_km2 = coalesce(protected_area_km2, 0),
+    pct_protected_area = round(protected_area_km2 / zone_area_km2 * 100, 1),
+    pct_unprotected_area = 100 - pct_protected_area
+  ) %>%
+  st_drop_geometry() %>%
+  select(zone = final_zone, zone_area_km2, protected_area_km2, pct_protected_area, pct_unprotected_area) %>%
+  arrange(desc(zone_area_km2))
+
+knitr::kable(quebr_zone_stats,
+             col.names = c("Zone", "Total area (km²)", "Protected area (km²)",
+                           "% Protected", "% Unprotected"),
+             caption = "Percentage of zone area covered by protected areas – Bearded Vulture")
 
 ```
 
