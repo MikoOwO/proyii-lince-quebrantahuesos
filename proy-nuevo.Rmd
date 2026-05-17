@@ -659,8 +659,8 @@ zona1$subcluster <- db_sub$cluster
 zona1 <- zona1 %>%
   mutate(
     cluster_final = case_when(
-      subcluster == 0 ~ 1,                # bruit → reste zone 1
-      TRUE ~ as.numeric(paste0("1.", subcluster))
+      subcluster != 0 ~ as.numeric(paste0("1.", subcluster)),
+      TRUE            ~ NA_real_          # bruit → pas de sous‑zone
     )
   )
 
@@ -688,11 +688,12 @@ ggplot() +
 # 6. Mettre à jour le dataframe principal
 # Fusionner les sous-clusters avec le dataframe original
 quebr_obj1 <- quebr_obj1 %>%
-  left_join(
-    zona1 %>% 
-      select(decimalLongitude, decimalLatitude, año, cluster_final) %>%
-      distinct(),
-    by = c("decimalLongitude", "decimalLatitude", "año")
+  mutate(
+    zone_poly = case_when(
+      cluster == 1 & !is.na(cluster_final) ~ as.character(cluster_final),
+      cluster != 0 & cluster != 1 ~ as.character(cluster),
+      TRUE ~ NA_character_
+    )
   )
 
 # Visualiser les clusters
@@ -715,36 +716,84 @@ ggplot() +
 
 
 ```{r}
-library(sf)
+# ============================================================
+# GYPAÈTE – Polygones des sous‑zones uniquement (pas de zone 1)
+# ============================================================
 
-# Convertir en sf avec le cluster
-quebr_sf_clusters <- quebr_obj1 %>%
-  filter(cluster != 0) %>%    # exclure le bruit
+# 1. Créer la colonne zone_poly SANS la zone 1 globale
+quebr_obj1 <- quebr_obj1 %>%
+  mutate(
+    zone_poly = case_when(
+      # Sous-zones de la zone 1
+      cluster == 1 & !is.na(cluster_final) & cluster_final != 1 ~ as.character(cluster_final),
+      # Autres clusters (ni bruit, ni zone 1)
+      cluster != 0 & cluster != 1                               ~ as.character(cluster),
+      # Tout le reste (bruit, zone 1 non subdivisée) → exclu des polygones
+      TRUE                                                      ~ NA_character_
+    )
+  )
+
+# 2. Séparer les points qui auront un polygone de ceux qui n’en auront pas
+quebr_zones <- quebr_obj1 %>% filter(!is.na(zone_poly))
+quebr_bruit <- quebr_obj1 %>% filter(is.na(zone_poly))
+
+# 3. Convertir en sf
+quebr_sf_zones <- quebr_zones %>%
   st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)
 
-# Créer un polygone par cluster
-zones_polygons <- quebr_sf_clusters %>%
-  group_by(cluster) %>%
+quebr_sf_bruit <- quebr_bruit %>%
+  st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)
+
+# 4. Polygones : un par valeur de zone_poly (pas de zone 1 possible)
+quebr_polygons_final <- quebr_sf_zones %>%
+  group_by(zone_poly) %>%
   summarise(geometry = st_combine(geometry)) %>%
   st_convex_hull()
 
-# Carte avec les polygones
-leaflet(zones_polygons) %>%
+# Sécurité : supprimer toute zone qui serait encore "1"
+quebr_polygons_final <- quebr_polygons_final %>%
+  filter(zone_poly != "1")
+
+# 5. Palette et carte
+pal_quebr_zones <- colorFactor("Set1", domain = quebr_polygons_final$zone_poly)
+
+# Extraire les coordonnées pour leaflet
+quebr_sf_zones$lng <- st_coordinates(quebr_sf_zones)[, 1]
+quebr_sf_zones$lat <- st_coordinates(quebr_sf_zones)[, 2]
+quebr_sf_bruit$lng <- st_coordinates(quebr_sf_bruit)[, 1]
+quebr_sf_bruit$lat <- st_coordinates(quebr_sf_bruit)[, 2]
+
+leaflet() %>%
   addProviderTiles(providers$CartoDB.Positron) %>%
+  # Polygones des sous‑zones et autres clusters
   addPolygons(
-    color = "darkred",
+    data = quebr_polygons_final,
+    color = ~pal_quebr_zones(zone_poly),
     weight = 2,
     fillOpacity = 0.3,
-    label = ~paste("Zone", cluster)
+    label = ~paste("Zone", zone_poly)
   ) %>%
+  # Points des zones
   addCircleMarkers(
-    data = quebr_sf_clusters,
-    color = ~factor(cluster),
-    radius = 3,
-    fillOpacity = 0.5,
-    label = ~paste("Zone", cluster)
+    data = quebr_sf_zones,
+    lng = ~lng, lat = ~lat,
+    color = ~pal_quebr_zones(zone_poly),
+    radius = 3, fillOpacity = 0.5,
+    label = ~paste("Zone", zone_poly)
+  ) %>%
+  # Points de bruit en gris
+  addCircleMarkers(
+    data = quebr_sf_bruit,
+    lng = ~lng, lat = ~lat,
+    color = "gray", radius = 2, fillOpacity = 0.4,
+    label = "Bruit"
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = pal_quebr_zones,
+    values = quebr_polygons_final$zone_poly,
+    title = "Zones (Gypaète)"
   )
-
 ```
 
 ```{r}
@@ -831,68 +880,31 @@ leaflet() %>%
 
 ```
 
-```{r}
+```{r, results='asis'}
 
-# ============================================================
-# Geographic statistics: % of zone area covered by protected areas
-# ============================================================
-
-# --- LYNX: use lynx_polygons from DBSCAN section ---
-cat("\n========== LYNX – Zone area vs. protected area ==========\n")
-
-# Compute zone areas in km²
-lynx_zone_area <- lynx_polygons %>%
-  mutate(zone_area_km2 = as.numeric(st_area(.)) / 1e6)
-
-# Merge all protected areas into a single multipolygon (avoids double-counting overlaps)
-
-
-if (file.exists("protected_union.rds")) {
-  protected_union <- readRDS("protected_union.rds")
-  message("protected_union loaded from cache.")
-} else {
-  protected_union <- st_union(protected_sf_spain)
-  saveRDS(protected_union, "protected_union.rds")
-  message("protected_union computed and cached.")
-}
-
-# Intersect each zone with the unified protected area
-lynx_intersection <- st_intersection(lynx_zone_area, protected_union)
-
-# Calculate protected area per zone (single geometry per zone, no duplicates)
-lynx_zone_stats <- lynx_zone_area %>%
-  left_join(
-    lynx_intersection %>%
-      mutate(protected_area_km2 = as.numeric(st_area(.)) / 1e6) %>%
-      st_drop_geometry() %>%
-      select(cluster, protected_area_km2),
-    by = "cluster"
-  ) %>%
-  mutate(
-    protected_area_km2 = coalesce(protected_area_km2, 0),
-    pct_protected_area = round(protected_area_km2 / zone_area_km2 * 100, 1),
-    pct_unprotected_area = 100 - pct_protected_area
-  ) %>%
-  st_drop_geometry() %>%
-  select(cluster, zone_area_km2, protected_area_km2, pct_protected_area, pct_unprotected_area) %>%
-  arrange(desc(zone_area_km2))
-
-knitr::kable(lynx_zone_stats,
-             col.names = c("Zone", "Total area (km²)", "Protected area (km²)",
-                           "% Protected", "% Unprotected"),
-             caption = "Percentage of zone area covered by protected areas – Lynx")
-
-# --- GYPAÈTE: create polygons for final zones (including subdivisions) ---
+# --- GYPAÈTE: create polygons for all final zones (sub‑zones + other clusters) ---
 cat("\n========== GYPAÈTE – Zone area vs. protected area ==========\n")
 
-# Use quebr_obj1 with final_zone (created earlier)
+# Use zone_poly column (must exist from earlier map section)
+if(!"zone_poly" %in% names(quebr_obj1)){
+  # If zone_poly hasn't been created yet, create it now
+  quebr_obj1 <- quebr_obj1 %>%
+    mutate(
+      zone_poly = case_when(
+        cluster == 1 & !is.na(cluster_final) & cluster_final != 1 ~ as.character(cluster_final),
+        cluster != 0 & cluster != 1                               ~ as.character(cluster),
+        TRUE                                                      ~ NA_character_
+      )
+    )
+}
+
 quebr_sf_final <- quebr_obj1 %>%
-  filter(!is.na(final_zone)) %>%
+  filter(!is.na(zone_poly)) %>%          # keep all non‑noise zones
   st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)
 
-# Convex hulls per final zone
+# Convex hull per zone
 quebr_polygons_final <- quebr_sf_final %>%
-  group_by(final_zone) %>%
+  group_by(zone_poly) %>%
   summarise(geometry = st_combine(geometry)) %>%
   st_convex_hull()
 
@@ -909,8 +921,8 @@ quebr_zone_stats <- quebr_zone_area %>%
     quebr_intersection %>%
       mutate(protected_area_km2 = as.numeric(st_area(.)) / 1e6) %>%
       st_drop_geometry() %>%
-      select(final_zone, protected_area_km2),
-    by = "final_zone"
+      select(zone_poly, protected_area_km2),
+    by = "zone_poly"
   ) %>%
   mutate(
     protected_area_km2 = coalesce(protected_area_km2, 0),
@@ -918,14 +930,13 @@ quebr_zone_stats <- quebr_zone_area %>%
     pct_unprotected_area = 100 - pct_protected_area
   ) %>%
   st_drop_geometry() %>%
-  select(zone = final_zone, zone_area_km2, protected_area_km2, pct_protected_area, pct_unprotected_area) %>%
+  select(zone = zone_poly, zone_area_km2, protected_area_km2, pct_protected_area, pct_unprotected_area) %>%
   arrange(desc(zone_area_km2))
 
 knitr::kable(quebr_zone_stats,
              col.names = c("Zone", "Total area (km²)", "Protected area (km²)",
                            "% Protected", "% Unprotected"),
              caption = "Percentage of zone area covered by protected areas – Bearded Vulture")
-
 ```
 
 
