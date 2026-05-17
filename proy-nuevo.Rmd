@@ -32,6 +32,7 @@ library(htmltools)
 library(htmlwidgets)
 library(knitr)
 library(scales)
+library(plotly)
 ```
 
 
@@ -243,11 +244,6 @@ A continuación se presenta la evolución temporal de los avistamientos del queb
 En general, se observa que el lince ibérico presenta una distribución más concentrada en el sur de España, mientras que el quebrantahuesos se localiza principalmente en zonas montañosas del norte. Además, el número de observaciones aumenta en las últimas décadas, lo que puede reflejar tanto una mejora en la conservación como un aumento en la recopilación de datos.
 
 ## 6 Objetivo 2.
-
-## 7 Objetivo 3.
-
-### Estudio del hábitat - LYNX
-
 
 # ======================================================
 # OBJECTIVE 2: Analysis of the Impact of Protected Areas
@@ -694,55 +690,61 @@ leaflet() %>%
 ```
 
 
-# ======================================================
+
 # OBJETIVO 3: Estudio del hábitat (variables climáticos)
 # ======================================================
 
 ## 3.1 hábitat del lince ibérico
 
 Pequeña limpieza de datos para OBJETIVO 3
-EXCLUIMOS los datos antes de 2007, porque resulta ser un error de ingresar datos, y sacamos las columnas que nos resultan interesantes.
+EXCLUIMOS los datos antes de 2007, por la anomalía
 ```{r}
-lynx_obj3 <- lynx_clean[lynx_clean$year > 2007,]
-# sacar las columnas útiles
-lynx_obj3 <- lynx_obj3 %>%
-  select(
-    decimalLatitude,
-    decimalLongitude,
-    fecha_parseada
-  )
-# filtrar na
-lynx_obj3 <- lynx_obj3 %>%
-  filter(
-    !is.na(decimalLatitude),
-    !is.na(decimalLongitude)
-  )
+lynx_sf_clusters <- lynx_sf_clusters[lynx_sf_clusters$year > 2007,]
 ```
 
 Utilizamos las zonas agrupadas del objetivo 2 y calculamos un punto centroide (representante) para cada zona.
+Si la zona es muy grande, pues 3 puntos mediante k-means.
 ```{r}
 library(sf)
 library(dplyr)
 
 zones_lynx <- lynx_sf_clusters %>%
   group_by(cluster) %>%
-  summarise(
-    geometry = st_combine(geometry),
-    n_points = n(),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    centroid = st_centroid(geometry),
-    lon = st_coordinates(centroid)[,1],
-    lat = st_coordinates(centroid)[,2]
-  )
-
+  group_modify(~{
+    
+    df <- .x
+    coords <- st_coordinates(df)
+    
+    # criterio de tamaño, si tiene número de filas > 
+    if (nrow(df) > 100) {
+      k <- 3   # zonas grandes
+    } else {
+      k <- 1   # zonas pequeñas
+    }
+    
+    # hacer una subdivision de zonas dentro de la zona grande
+    km <- kmeans(coords, centers = k, nstart = 20)
+    # calcular centroides
+    centroids <- as.data.frame(km$centers)
+    colnames(centroids) <- c("lon", "lat")
+    
+    centroids$cluster <- unique(df$cluster)
+    centroids$subcluster <- 1:nrow(centroids)
+    
+    centroids
+  }) %>%
+  ungroup()
 ```
 
 
-FASE 1: descarga de datos meteológicos
-una vez obtenemos los resultados, dejamos eval=FALSE para que no vuelva a llamar el API y trabajmos sobre el resultado guardado.
-ALREDEDOR DE 17años x 365 días x 82 zonas = 508810 filas
+### FASE 1: DESCARGA DE DATOS CLIMÁTICOS
+
+Mediante una función con GET, podemos obtener desde el API del OPENMETEO valores de variables climáticos diarios que nos resultan interesantes. En este caso hemos escogido la temperatura media, temperatura máxima, temperatura mínima y la precipitación acumulada.
+
+Una vez obtenemos los resultados, dejamos eval=FALSE para que no vuelva a llamar el API y trabajmos sobre el resultado guardado.
+
+Como resultado debería tener alrededor de 17años x 365 días x 8 zonas (subzonas incluidas) = 49640 filas
+
 ```{r,eval=FALSE}
 
 # función de descarga diaria para lince
@@ -767,11 +769,11 @@ get_openmeteo_daily_lynx <- function(lat, lon, start_date, end_date) {
     ),
     timezone = "UTC"
   ))
-  # pasar a JSON para leer mejor
+  # convertir el JSON a un objeto R
 
   content <- fromJSON(rawToChar(res$content), simplifyDataFrame = TRUE)
 
-  # sacar solo los datos que nos interesa
+  # extraer solo los datos que nos interesa
   data.frame(
     date = as.Date(content$daily$time),
     tmean = content$daily$temperature_2m_mean,
@@ -782,6 +784,8 @@ get_openmeteo_daily_lynx <- function(lat, lon, start_date, end_date) {
 }
 
 # FIN DE LA FUNCIÓN
+#---------------------------
+
 # iterar por zonas
 # creamos una lista resultado para ir metiendo los resultados
 resultados_meteolynx <- list()
@@ -790,17 +794,22 @@ resultados_meteolynx <- list()
 # para cada zona, aplicar la función meteo
 for (i in seq_len(nrow(zones_lynx))) {
 
-  cat("Procesando zona", zones_lynx$cluster[i], "\n")
+  cat("Procesando cluster", zones_lynx$cluster[i],
+      "- subcluster", zones_lynx$subcluster[i], "\n")
+
 
   meteo_lynx_i <- get_openmeteo_daily_lynx(
-    lat = zones_quebr$lat[i],
-    lon = zones_quebr$lon[i],
+    lat = zones_lynx$lat[i],
+    lon = zones_lynx$lon[i],
     start_date = as.Date("2008-01-01"),
     end_date   = as.Date("2024-12-31")
   )
 
-  # etiqueta la zona
-  meteo_lynx_i$cluster <- rep(zones_lynx$cluster[i], nrow(meteo_lynx_i))
+
+  # etiquetar cluster y subcluster
+  meteo_lynx_i$cluster <- zones_lynx$cluster[i]
+  meteo_lynx_i$subcluster <- zones_lynx$subcluster[i]
+
 
   resultados_meteolynx[[i]] <- meteo_lynx_i
 
@@ -818,10 +827,11 @@ write.csv(meteo_lynx_zonas_daily,"meteo_lynx_estacion.csv")
 ```
 
 
-FASE 2: preparar fechas + estaciones
+### FASE 2: ESTADÍSTICA ESTACIONAL
 ```{r}
 # cargar datos
 lynx_obj3<- readRDS("meteo_lynx_daily_by_zone_2008_2024.rds")
+
 # añadir estación dependiendo de la fecha
 library(dplyr)
 library(lubridate)
@@ -837,15 +847,13 @@ lynx_obj3 <- lynx_obj3 %>%
     )
   )
 
-```
-
-FASE 3: Estadística estacional
-```{r}
+# asegurar que year es de tipo date
 lynx_obj3 <- lynx_obj3 %>%
   mutate(year = lubridate::year(date))
 
+# agrupar mediante año, estación, zona y subzona
 lynx_media_estacional <- lynx_obj3 %>%
-  group_by(year,season,cluster) %>%
+  group_by(year,season,cluster,subcluster) %>%
   summarise(
     tmean = mean(tmean, na.rm = TRUE),
     tmax  = mean(tmax,  na.rm = TRUE),
@@ -854,8 +862,170 @@ lynx_media_estacional <- lynx_obj3 %>%
   )
 ```
 
+
+### FASE 3: CRUZAR LOS AVISTAMIENTOS Y LAS VARIABLES CLIMÁTICAS
+Queremos cruzar los datos climáticos con los avistamientos.
+Para los avistamientos se ha realizado un recuento por zonas (subzonas), año y season.
+
+```{r}
+# unificación de nombre para trabajar más fácil
+lynx_sf_clusters <- lynx_sf_clusters %>%
+  rename(lon = lng)
+
+# añadir estación dependiendo de la fecha a los avistamientos para realizar agrupaciones estacionales
+
+lynx_obj3_avistamiento <- lynx_sf_clusters %>%
+  mutate(
+    md = format(fecha_parseada, "%m-%d"),
+    season = case_when(
+      md >= "03-20" & md < "06-21" ~ "Primavera",
+      md >= "06-21" & md < "09-23" ~ "Verano",
+      md >= "09-23" & md < "12-21" ~ "Otoño",
+      TRUE                         ~ "Invierno"
+    )
+  )
+
+# añadir también subzonas
+library(dplyr)
+library(purrr)
+library(geosphere)
+
+# función para asignar subcluster a un punto
+asignar_subcluster <- function(lon, lat, cluster, subzonas) {
+  
+  subs <- subzonas %>% filter(cluster == !!cluster)
+  
+  # calcular distancias
+  distancias <- distHaversine(
+    matrix(c(lon, lat), ncol = 2),
+    matrix(c(subs$lon, subs$lat), ncol = 2)
+  )
+  
+  # índice del más cercano
+  idx <- which.min(distancias)
+  
+  return(subs$subcluster[idx])
+}
+
+# aplicar a todos los avistamientos
+lynx_obj3_avistamiento <- lynx_obj3_avistamiento %>%
+  rowwise() %>%
+  mutate(subcluster = asignar_subcluster(lon, lat, cluster, zones_lynx)) %>%
+  ungroup()
+
+
+# realizar un recuento de número de avistamientos agrupado por año y estación
+lynx_recuento <- lynx_obj3_avistamiento %>%
+  group_by(año, season,cluster,subcluster) %>%   # o año, estacion según tus nombres
+  summarise(avistamientos = n(), .groups = "drop")
+
+# unificación de nombres para poder hacer JOIN
+lynx_recuento <- lynx_recuento %>%
+  rename(year = año)
+
+
+# cruzamos los datos: crear una tabla que contenga a la vez recuento y variables climáticas
+lynx_obj3_final <- lynx_media_estacional %>%
+  left_join(lynx_recuento, by = c("year", "season", "cluster", "subcluster"))
+
+# rellenar Na
+
+lynx_obj3_final <- lynx_obj3_final %>%
+  mutate(avistamientos = replace_na(avistamientos, 0))
+```
+### GRAFICAR
+
+```{r}
+library(ggplot2)
+
+ggplot(lynx_obj3_final%>% filter(avistamientos > 0), aes(x = tmean, y = avistamientos)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~ cluster)
+
+ggplot(lynx_obj3_final%>% filter(avistamientos > 0), aes(x = prec, y = avistamientos)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~ cluster)
+```
+```{r}
+
+ggplot(lynx_obj3_final, aes(x = year, y = avistamientos, color = season)) +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~ cluster)
+
+```
+
+
+
 Resultado 1:
-evolución temporal por estación
+evolución temporal
+Escalamos para que estén en la misma magnitud
+
+```{r, fig.width=12, fig.height=15}
+library(dplyr)
+# crear una columna year-season
+lynx_plot <- lynx_obj3_final %>%
+  mutate(
+    season = factor(season,
+                    levels = c("Invierno", "Primavera", "Verano", "Otoño"))
+  ) %>%
+  arrange(year, season) %>%
+  mutate(
+  year_season = paste(year, season, sep = "-"),
+  year_season = factor(year_season, levels = unique(year_season))
+)
+
+# crear una columna para cluster-subcluster
+lynx_plot <- lynx_plot %>%
+  mutate(subzona_id = paste(cluster, subcluster, sep = "_"))
+
+
+# escalar
+lynx_plot <- lynx_plot %>%
+  ungroup() %>%
+  mutate(
+    av_scaled = as.numeric(scale(avistamientos)),
+    temp_scaled = as.numeric(scale(tmean)),
+    temp_max_scaled = as.numeric(scale(tmax)),
+    temp_min_scaled = as.numeric(scale(tmin)),
+    prec_scaled = as.numeric(scale(prec))
+  )
+
+# columna
+lynx_plot <- lynx_plot %>%
+  mutate(
+    season_num = as.numeric(season),
+    time = year + (season_num - 1) / 4
+  )
+
+# dibujar la gráfica
+
+
+
+ggplot(lynx_plot, aes(x = time)) +
+  geom_line(aes(y = av_scaled, color = "Avistamientos",group = 1), size = 1) +
+  geom_line(aes(y = temp_scaled, color = "Temperatura",group = 1), size = 1) +
+  facet_wrap(~ subzona_id, ncol=2) +
+  labs(y = "Valor escalado", color = "Variable")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+
+p <- ggplot(lynx_plot, aes(x = time)) +
+  geom_line(aes(y = av_scaled, color = "Avistamientos", group = 1)) +
+  geom_line(aes(y = temp_scaled, color = "Temperatura", group = 1)) +
+  facet_wrap(~ subzona_id, ncol=2)
+
+ggplotly(p)
+
+```
+
+
+
+
 
 ```{r}
 library(ggplot2)
@@ -924,42 +1094,53 @@ ggplot(lynx_media_estacional,
 
 ## 3.2 hábitat de Quebrantahuesos
 Pequeña limpieza de datos para OBJETIVO 3
-EXCLUIMOS los datos antes de 2007, porque resulta ser un error de ingresar datos, y sacamos las columnas que nos resultan interesantes.
+EXCLUIMOS los datos antes de 2007, porque resulta ser un error de ingresar datos.
+
 ```{r}
-quebr_obj3 <- quebr_clean[quebr_clean$year > 2007,]
-# sacar solo las columnas que necesitamos
-quebr_obj3 <- quebr_obj3 %>%
-  select(
-    decimalLatitude,
-    decimalLongitude,
-    fecha_parseada
-  )
-# filtrar na por si acaso
-quebr_obj3 <- quebr_obj3 %>%
-  filter(
-    !is.na(decimalLatitude),
-    !is.na(decimalLongitude)
+quebr_sf_clusters <- quebr_sf_clusters[quebr_sf_clusters$year > 2007,]
+library(sf)
+
+coords <- st_coordinates(quebr_sf_clusters)
+
+quebr_sf_clusters <- quebr_sf_clusters %>%
+  mutate(
+    lon = coords[,1],
+    lat = coords[,2]
   )
 ```
 
-Cogemos las zonas ya segmentadas en el objetivo2, y calculamos un punto centroide (representante) para cada zona.
+Utilizamos las zonas agrupadas del objetivo 2 y calculamos un punto centroide (representante) para cada zona.
+Si la zona es muy grande, pues 3 puntos mediante k-means.
 ```{r}
 library(sf)
 library(dplyr)
 
 zones_quebr <- quebr_sf_clusters %>%
   group_by(cluster) %>%
-  summarise(
-    geometry = st_combine(geometry),
-    n_points = n(),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    centroid = st_centroid(geometry),
-    lon = st_coordinates(centroid)[,1],
-    lat = st_coordinates(centroid)[,2]
-  )
-
+  group_modify(~{
+    
+    df <- .x
+    coords <- st_coordinates(df)
+    
+    # criterio de tamaño, si tiene número de filas > 
+    if (nrow(df) > 100) {
+      k <- 3   # zonas grandes
+    } else {
+      k <- 1   # zonas pequeñas
+    }
+    
+    # hacer una subdivision de zonas dentro de la zona grande
+    km <- kmeans(coords, centers = k, nstart = 20)
+    # calcular centroides
+    centroids <- as.data.frame(km$centers)
+    colnames(centroids) <- c("lon", "lat")
+    
+    centroids$cluster <- unique(df$cluster)
+    centroids$subcluster <- 1:nrow(centroids)
+    
+    centroids
+  }) %>%
+  ungroup()
 ```
 
 
@@ -1007,6 +1188,8 @@ get_openmeteo_daily_quebr <- function(lat, lon, start_date, end_date) {
 }
 
 # FIN DE LA FUNCIÓN
+#----------------------
+
 # iterar por zonas
 # creamos una lista resultado para ir metiendo los resultados
 resultados_meteoquebr <- list()
@@ -1015,7 +1198,9 @@ resultados_meteoquebr <- list()
 # para cada zona, aplicar la función meteo
 for (i in seq_len(nrow(zones_quebr))) {
 
-  cat("Procesando zona", zones_quebr$cluster[i], "\n")
+  cat("Procesando cluster", zones_quebr$cluster[i],
+      "- subcluster", zones_quebr$subcluster[i], "\n")
+
 
   meteo_quebr_i <- get_openmeteo_daily_quebr(
     lat = zones_quebr$lat[i],
@@ -1024,8 +1209,11 @@ for (i in seq_len(nrow(zones_quebr))) {
     end_date   = as.Date("2024-12-31")
   )
 
-  # etiqueta la zona
-  meteo_quebr_i$cluster <- rep(zones_quebr$cluster[i], nrow(meteo_quebr_i))
+
+  # etiquetar cluster y subcluster
+  meteo_quebr_i$cluster <- zones_quebr$cluster[i]
+  meteo_quebr_i$subcluster <- zones_quebr$subcluster[i]
+
 
   resultados_meteoquebr[[i]] <- meteo_quebr_i
 
@@ -1081,7 +1269,7 @@ mean_wdir <- function(x) {
 
 # calcular una única variable meteológica para cada estación de cada año.
 quebr_media_estacional <- quebr_obj3 %>%
-  group_by(year,season,cluster) %>%
+  group_by(year,season,cluster,subcluster) %>%
   summarise(
     tmean = mean(tmean, na.rm = TRUE),
     tmax  = mean(tmax,  na.rm = TRUE),
@@ -1093,112 +1281,89 @@ quebr_media_estacional <- quebr_obj3 %>%
 
   )
 ```
-Resultado 1:
 
-Observamos que el cluster 1 tiene mayor número de avistamientos, con 14529 avistamientos.
+
+FASE 4: cruzación avistamientos
 ```{r}
-zones_quebr[order(-zones_quebr$n_points),]
+# añadir estación dependiendo de la fecha a los avistamientos para realizar agrupaciones estacionales
+
+quebr_obj3_avistamiento <- quebr_sf_clusters %>%
+  mutate(
+    md = format(fecha_parseada, "%m-%d"),
+    season = case_when(
+      md >= "03-20" & md < "06-21" ~ "Primavera",
+      md >= "06-21" & md < "09-23" ~ "Verano",
+      md >= "09-23" & md < "12-21" ~ "Otoño",
+      TRUE                         ~ "Invierno"
+    )
+  )
+
+# añadir también subzonas
+library(dplyr)
+library(purrr)
+library(geosphere)
+
+# cogemos la función para asignar zonas de lynx
+# aplicar a todos los avistamientos
+
+
+
+quebr_obj3_avistamiento <- quebr_obj3_avistamiento %>%
+  rowwise() %>%
+  mutate(subcluster = asignar_subcluster(lon, lat, cluster, quebr_lynx)) %>%
+  ungroup()
+
+
+# realizar un recuento de número de avistamientos agrupado por año y estación
+quebr_recuento <- quebr_obj3_avistamiento %>%
+  group_by(año, season,cluster,subcluster) %>%   # o año, estacion según tus nombres
+  summarise(avistamientos = n(), .groups = "drop")
+
+# unificación de nombres para poder hacer JOIN
+quebr_recuento <- quebr_recuento %>%
+  rename(year = año)
+
+# cruzamos los datos: crear una tabla que contenga a la vez recuento y variables climáticas
+quebr_obj3_final <- quebr_media_estacional %>%
+  left_join(quebr_recuento, by = c("year", "season", "cluster", "subcluster"))
+
+# rellenar Na
+
+quebr_obj3_final <- quebr_obj3_final %>%
+  mutate(avistamientos = replace_na(avistamientos, 0))
+
 ```
 
-Resultado 2:
-Graficar la evolución temporal por estación
+
+
+
+
 
 ```{r}
 library(ggplot2)
-# TEMPERATURA MEDIA
-ggplot(quebr_media_estacional,
-       aes(x = year, y = tmean, color = season, group = season)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "Temperatura media (°C)",
-    color = "Estación",
-    title = "Evolución de la temperatura media por estación"
-  ) +
-  theme_minimal()
 
-# TEMPERATURA MAXIMA
-ggplot(quebr_media_estacional,
-       aes(x = year, y = tmax, color = season, group = season)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "Temperatura máxima (°C)",
-    color = "Estación",
-    title = "Evolución de la temperatura máxima por estación"
-  ) +
-  theme_minimal()
+ggplot(quebr_obj3_final%>% filter(avistamientos > 0), aes(x = tmean, y = avistamientos)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~ cluster)
 
-# TEMPERATURA MINIMA
-ggplot(quebr_media_estacional,
-       aes(x = year, y = tmin, color = season, group = season)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "Temperatura mínima (°C)",
-    color = "Estación",
-    title = "Evolución de la temperatura mínima por estación"
-  ) +
-  theme_minimal()
-
-# PRECIPITACIÓN MEDIA
-ggplot(quebr_media_estacional,
-       aes(x = year, y = prec, color = season, group = season)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "precipitación (mm)",
-    color = "Estación",
-    title = "Evolución de la precipitación media por estación"
-  ) +
-  theme_minimal()
-```
-```{r}
-library(tidyr)
-
-quebr_long <- quebr_media_estacional %>%
-  pivot_longer(
-    cols = c(tmean, tmax, tmin),
-    names_to = "variable",
-    values_to = "valor"
-  )
-
-ggplot(quebr_long,
-       aes(x = year, y = valor, color = variable)) +
-  geom_line(linewidth = 1) +
-  facet_wrap(~ season) +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "Temperatura (°C)",
-    color = "Variable",
-    title = "Evolución térmica por estación"
-  ) +
-  theme_minimal()
+ggplot(quebr_obj3_final%>% filter(avistamientos > 0), aes(x = tmean, y = avistamientos)) +
+  geom_point(alpha = 0.5) +
+  facet_wrap(~ cluster) + 
+  facet_wrap(~ subcluster)
 ```
 
 ```{r}
-ggplot(quebr_media_estacional,
-       aes(x = year, y = prec, color = season, group = season)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "Temperatura media (°C)",
-    color = "Estación",
-    title = "Evolución de la temperatura media por estación"
-  ) +
-  theme_minimal()
+
+ggplot(quebr_obj3_final, aes(x = year, y = avistamientos, color = season)) +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~ cluster)
+
 ```
+
+
+
+
 
 ```{r}
 # velocidad de viento
