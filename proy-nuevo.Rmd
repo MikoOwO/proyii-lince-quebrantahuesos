@@ -1840,3 +1840,527 @@ ggplot(quebr_obj3, aes(x = wdir)) +
   labs(title = "Rosa de (dirección) viento por estación")
 
 ```
+# ======================================================
+# OBJETIVO 4: Estudio de las variables biológicas
+# ======================================================
+
+
+### 1.Lectura
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r}
+Cnj <- read.csv("cnj_cmn.csv", sep="\t", quote = "")
+
+```
+### 2.Limpieza
+````{r}
+Cnj_clean <- Cnj[, c( 
+  "decimalLatitude",
+  "decimalLongitude",
+  "eventDate",
+  "year",
+  "month",
+  "countryCode",
+  "individualCount",
+  "stateProvince",
+  "locality")]
+````
+
+Nos quedamos con los que son de España o Portugal
+````{r}
+Cnj_clean <- Cnj_clean[Cnj_clean$countryCode == "ES" | Cnj_clean$countryCode == "PT", ]
+````
+
+El estudio del lince lo haremos a partir del año 2007 por tanto eliminamos las filas con fecha anterior a este año.
+```{r}
+Cnj_clean <- Cnj_clean[Cnj_clean$year > "2007",]
+```
+
+Si contamos la cantidad de avistamientos del año 2026 y la comparamos con el 2025 veremos que son muy pocos. Esto tiene sentido porque no ha finalizado ni siquiera la mitad del año:
+```{r}
+Cnj_clean %>%
+  summarise(avistamientos_25 = sum(year == 2025))
+Cnj_clean %>%
+  summarise(avistamientos_26 = sum(year == 2026))
+```
+Vamos a eliminar tambien las filas de los avistamientos pertenecientes al 2026 para que no nos ensucien los datos.
+
+```{r}
+Cnj_clean <- Cnj_clean[Cnj_clean$year  != 2026,]
+```
+
+Evaluámos si hay NAs en las coordenadas
+```{r}
+Cnj_clean %>%
+  summarise(nulos_lat = sum(is.na(decimalLatitude)),
+            nulos_long = sum(is.na(decimalLongitude)))
+```
+Podemos suponer que las columnas donde falta la longitud son las mismas columnas donde falta la latitud. Limpiamos las columnas no representables para poder mapear los avistamientos. Creamos una nueva base de datos sin estos valores faltantes.
+```{r}
+Cnj_clean <- Cnj_clean[!is.na(Cnj_clean$decimalLatitude) & !is.na(Cnj_clean$decimalLongitude),]
+Cnj_clean %>%
+  summarise(nulos_lat = sum(is.na(decimalLatitude)),
+            nulos_long = sum(is.na(decimalLongitude)))
+```
+
+Para graficar el número de conejos por año vamos a necesitar eliminar las filas en las que no existe año.
+```{r}
+Cnj_clean %>% summarise(total_nas = sum(is.na(year)))
+Cnj_clean <- Cnj_clean[!is.na(Cnj_clean$year),]
+Cnj_clean %>% summarise(total_nas = sum(is.na(year)))
+```
+#3.Clasificación geografica
+```{r}
+library(dplyr)
+library(flexclust) # Nos ayudará a calcular las distancias rápidamente
+
+# 2. Extraemos las coordenadas de los conejos
+coor_conejos <- Cnj_clean %>% 
+  select(decimalLongitude, decimalLatitude)
+
+# 3. Calculamos la distancia de cada conejo a cada lince
+# (Esto calcula una matriz de distancias)
+dist_matrix <- dist2(coor_conejos, lynx_obj1 %>% select(decimalLongitude, decimalLatitude))
+
+# 4. Buscamos el lince más cercano para cada conejo
+indice_mas_cercano <- apply(dist_matrix, 1, which.min)
+distancia_mas_cercana <- apply(dist_matrix, 1, min)
+
+# 5. Asignamos el cluster al conejo, pero OJO: si la distancia es mayor 
+# al "eps" (0.35), significa que el conejo está fuera de la zona.
+eps_limite <- 0.35
+
+Cnj_clean <- Cnj_clean %>%
+  mutate(
+    # Heredamos el cluster del punto más cercano
+    cluster_zona = lynx_obj1$cluster[indice_mas_cercano],
+    # Si está más lejos del radio permitido, lo mandamos a zona 0 (sin zona)
+    cluster_zona = ifelse(distancia_mas_cercana <= eps_limite, cluster_zona, 0)
+  )
+```
+
+#Comprobamos que la matriz de distancias esta bien construida
+```{r}
+ncol(dist_matrix)
+nrow(dist_matrix)
+```
+
+
+
+#Una vez clasificados los conejos por zonas eliminamos todos los conejos que tienen número de cluster 0. Estos conejos no se encuentran en ninguna de las zonas que queremos estudiar.
+```{r}
+Cnj_clean <- Cnj_clean %>% filter(cluster_zona!= 0)
+```
+#¿Cuantas zonas distintas hay ?
+```{r}
+length(unique(Cnj_clean$cluster_zona))
+length(unique(lynx_obj1$cluster))
+unique(Cnj_clean$cluster_zona)
+unique(lynx_obj1$cluster)
+```
+#Hay linces con cluster 0 porque el avistamiento se ha realizado fuera de zonas de alta densidad de población de linces. No obstante eliminamos el cluster 0 de los conejos porque no nos interesan los que están fuera de estas zonas para nuestro análisis ya que introducirian mucho ruido.
+
+#Una vez hemos asignado las zonas correspondientes a cada uno de los conejos vamos a construir unos nuevos datasets que separen a los animales por zonas -de la 1 a la 4-. Empezamos con los linces:
+```{r}
+lynx_Z1 <- lynx_obj1 %>% filter(cluster == 1)
+lynx_Z2 <- lynx_obj1 %>% filter(cluster == 2)
+lynx_Z3 <- lynx_obj1 %>% filter(cluster == 3)
+lynx_Z4 <- lynx_obj1 %>% filter(cluster == 4)
+
+#Creamos las de los linces y comprobamos que no se han perdido datos por el camino
+nrow(lynx_Z1) + nrow(lynx_Z2) + nrow(lynx_Z3) + nrow(lynx_Z4)
+```
+#Continuamos con los conejos:
+```{r}
+cnj_Z1 <- Cnj_clean %>% filter(cluster_zona == 1)
+cnj_Z2 <- Cnj_clean %>% filter(cluster_zona == 2)
+cnj_Z3 <- Cnj_clean %>% filter(cluster_zona == 3)
+cnj_Z4 <- Cnj_clean %>% filter(cluster_zona == 4)
+nrow(cnj_Z1) + nrow(cnj_Z2) + nrow(cnj_Z3) + nrow(cnj_Z4)
+```
+
+#4.Graficado
+
+#Comenzamos a graficar, en primer lugar para hacer un análisis general, graficamos todos los avistamientos de linces y conejos a lo largo de los años en las zonas seleccionadas
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# NOTA: Asumo que tu columna de año se llama 'year'. 
+# Si se llama 'anyo', 'fecha' o de otra forma, cambia 'year' por tu columna.
+
+# 1. Contar linces por año
+lynx_temporal <- lynx_obj1 %>%
+  group_by(year) %>% 
+  summarise(Total = n()) %>%
+  mutate(Especie = "Lince")
+
+# 2. Contar conejos por año
+cnj_temporal <- Cnj_clean %>%
+  group_by(year) %>% 
+  summarise(Total = n()) %>%
+  mutate(Especie = "Conejo")
+
+# 3. Unir ambas tablas en una sola para graficar
+datos_grafico <- bind_rows(lynx_temporal, cnj_temporal)
+
+# 4. Crear la gráfica de líneas evolución temporal
+ggplot(datos_grafico, aes(x = year, y = Total, color = Especie, group = Especie)) +
+  geom_line(linewidth = 1.2) +                  # Dibuja la línea de evolución
+  geom_point(size = 2.5) +                     # Añade puntos en cada año para marcar el dato
+  facet_wrap(~Especie, scales = "free_y") +    # Separa en dos paneles con escalas independientes
+  labs(
+    title = "Evolución de los avistamientos en España",
+    subtitle = "Comparativa histórica de Linces y Conejos",
+    x = "Año",
+    y = "Número total de avistamientos registrados"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",                  # Quitamos leyenda porque ya está dividido por títulos
+    plot.title = element_text(face = "bold", size = 14),
+    strip.text = element_text(face = "bold", size = 12) # Estilo para los títulos de cada panel
+  )
+```
+
+```{r}
+library(tidyr)
+
+# 1. Transformamos los datos a formato ancho (una columna para Conejo y otra para Lince)
+datos_ancho <- datos_grafico %>%
+  pivot_wider(names_from = Especie, values_from = Total, values_fill = 0)
+
+# 2. Calculamos el factor de escala para que el lince se "ajuste" visualmente al gráfico del conejo
+# (Dividimos el máximo de conejos entre el máximo de linces)
+escalado <- max(datos_ancho$Conejo) / max(datos_ancho$Lince)
+
+# 3. Graficamos ambas especies juntas
+ggplot(datos_ancho, aes(x = year)) +
+  # Línea y puntos para los Conejos (Eje principal - Izquierda)
+  geom_line(aes(y = Conejo, color = "Conejo"), linewidth = 1.2) +
+  geom_point(aes(y = Conejo, color = "Conejo"), size = 2.5) +
+  
+  # Línea y puntos para los Linces (Multiplicamos por el factor para escalarlo visualmente)
+  geom_line(aes(y = Lince * escalado, color = "Lince"), linewidth = 1.2) +
+  geom_point(aes(y = Lince * escalado, color = "Lince"), size = 2.5) +
+  
+  # Configuración de los dos ejes Y
+  scale_y_continuous(
+    name = "Total Avistamientos de Conejos",
+    sec.axis = sec_axis(~ . / escalado, name = "Total Avistamientos de Linces")
+  ) +
+  
+  # Colores personalizados para identificar cada uno
+  scale_color_manual(values = c("Conejo" = "#de2d26", "Lince" = "#3182bd")) +
+  
+  labs(
+    title = "Relación temporal: Linces vs. Conejos",
+    subtitle = "Evolución combinada de avistamientos en España",
+    x = "Año",
+    color = "Especie"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom"
+  )
+```
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# NOTA: Asegúrate de cambiar 'year' por el nombre real de tu columna de años si es distinto.
+
+# ============================================================
+# 1. PREPARACIÓN Y UNIFICACIÓN DE LOS DATOS POR ZONA
+# ============================================================
+
+# Agrupamos y contamos los Linces por año en cada zona
+l_z1 <- lynx_Z1 %>% group_by(year) %>% summarise(Lince = n()) %>% mutate(Zona = "Zona 1")
+l_z2 <- lynx_Z2 %>% group_by(year) %>% summarise(Lince = n()) %>% mutate(Zona = "Zona 2")
+l_z3 <- lynx_Z3 %>% group_by(year) %>% summarise(Lince = n()) %>% mutate(Zona = "Zona 3")
+l_z4 <- lynx_Z4 %>% group_by(year) %>% summarise(Lince = n()) %>% mutate(Zona = "Zona 4")
+
+linces_zonas <- bind_rows(l_z1, l_z2, l_z3, l_z4)
+
+# Agrupamos y contamos los Conejos por año en cada zona
+c_z1 <- cnj_Z1 %>% group_by(year) %>% summarise(Conejo = n()) %>% mutate(Zona = "Zona 1")
+c_z2 <- cnj_Z2 %>% group_by(year) %>% summarise(Conejo = n()) %>% mutate(Zona = "Zona 2")
+c_z3 <- cnj_Z3 %>% group_by(year) %>% summarise(Conejo = n()) %>% mutate(Zona = "Zona 3")
+c_z4 <- cnj_Z4 %>% group_by(year) %>% summarise(Conejo = n()) %>% mutate(Zona = "Zona 4")
+
+conejos_zonas <- bind_rows(c_z1, c_z2, c_z3, c_z4)
+
+# Unimos ambas especies en una sola base de datos por Año y Zona
+datos_zonas_ancho <- full_join(conejos_zonas, linces_zonas, by = c("year", "Zona")) %>% 
+  mutate(
+    Conejo = replace_na(Conejo, 0),
+    Lince = replace_na(Lince, 0)
+  )
+
+# ============================================================
+# 2. CÁLCULO DEL FACTOR DE ESCALADO GLOBAL
+# ============================================================
+# Calculamos un factor promedio para que el eje secundario funcione en los 4 paneles
+escalado_zonas <- max(datos_zonas_ancho$Conejo) / max(datos_zonas_ancho$Lince)
+
+
+# ============================================================
+# 3. GRAFICAR LAS 4 ZONAS EN UNA SOLA PESTAÑA
+# ============================================================
+ggplot(datos_zonas_ancho, aes(x = year)) +
+  # Líneas y puntos de Conejos (Eje Izquierdo)
+  geom_line(aes(y = Conejo, color = "Conejo"), linewidth = 1) +
+  geom_point(aes(y = Conejo, color = "Conejo"), size = 2) +
+  
+  # Líneas y puntos de Linces (Escalados para el Eje Derecho)
+  geom_line(aes(y = Lince * escalado_zonas, color = "Lince"), linewidth = 1) +
+  geom_point(aes(y = Lince * escalado_zonas, color = "Lince"), size = 2) +
+  
+  # Configuración de los dos ejes Y (reutilizando el factor de escala)
+  scale_y_continuous(
+    name = "Total Avistamientos de Conejos",
+    sec.axis = sec_axis(~ . / escalado_zonas, name = "Total Avistamientos de Linces")
+  ) +
+  
+  # Colores para cada especie
+  scale_color_manual(values = c("Conejo" = "#de2d26", "Lince" = "#3182bd")) +
+  #3182bd
+  # Crucial: Separar en 4 paneles (una para cada Zona) en una cuadrícula de 2x2
+  facet_wrap(~Zona, ncol = 2, scales = "free_y") +
+  
+  labs(
+    title = "Relación temporal Lince vs. Conejo por Zonas (Clusters)",
+    subtitle = "Análisis individualizado por regiones densas",
+    x = "Año",
+    color = "Especie"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    strip.text = element_text(face = "bold", size = 12), # Títulos de cada zona
+    legend.position = "bottom"
+  )
+```
+#5. Ratio conejo/lince
+#Podemos sacar el ratio Conejo/Lince por zona
+```{r}
+# Calculamos el total de conejos y linces por zona y sacamos el ratio
+tabla_ratios <- datos_zonas_ancho %>%
+  group_by(Zona) %>%
+  summarise(
+    Total_Conejos = sum(Conejo),
+    Total_Linces = sum(Lince)
+  ) %>%
+  mutate(
+    Ratio_Conejo_Lince = Total_Conejos / Total_Linces
+  )
+
+# Mostramos el resultado en la consola
+print(tabla_ratios)
+```
+
+#6.Análisis de correlación cruzada con desfase temporalç
+
+#Vemos la correlación de los avistamientos de conejos y linces pero con desfase temporal ya que los cambios en las poblaciones de conejos no tienen porqué verse reflejados en cambios poblacionales ese mismo año.
+```{r}
+# Configuramos la pantalla para ver los 4 gráficos de correlación juntos (2 filas, 2 columnas)
+par(mfrow = c(2, 2))
+
+# ============================================================
+# ANÁLISIS DE CORRELACIÓN CRUZADA POR ZONA
+# ============================================================
+
+# --- ZONA 1 ---
+z1_datos <- datos_zonas_ancho %>% filter(Zona == "Zona 1") %>% arrange(year)
+ccf(z1_datos$Conejo, z1_datos$Lince, main = "Correlación Cruzada: Zona 1", lag.max = 5, ylab = "Correlación")
+
+# --- ZONA 2 ---
+z2_datos <- datos_zonas_ancho %>% filter(Zona == "Zona 2") %>% arrange(year)
+ccf(z2_datos$Conejo, z2_datos$Lince, main = "Correlación Cruzada: Zona 2", lag.max = 5, ylab = "Correlación")
+
+# --- ZONA 3 ---
+z3_datos <- datos_zonas_ancho %>% filter(Zona == "Zona 3") %>% arrange(year)
+ccf(z3_datos$Conejo, z3_datos$Lince, main = "Correlación Cruzada: Zona 3", lag.max = 5, ylab = "Correlación")
+
+# --- ZONA 4 ---
+z4_datos <- datos_zonas_ancho %>% filter(Zona == "Zona 4") %>% arrange(year)
+ccf(z4_datos$Conejo, z4_datos$Lince, main = "Correlación Cruzada: Zona 4", lag.max = 5, ylab = "Correlación")
+
+# Restauramos la configuración de pantalla de R por defecto
+par(mfrow = c(1, 1))
+```
+#Quiza estaria bien hacer gráficas pero sumando años, es decir sumandoles a todos los linces un año para que asi podamos ver solapadas una población con otra
+
+#Para hacer analisis de solapamiento estacional quitamos las filas en las que no existe dato de mes 
+```{r}
+lynx_Z1_mes <- lynx_Z1 %>% filter(!is.na(month))
+lynx_Z2_mes <- lynx_Z2 %>% filter(!is.na(month))
+lynx_Z3_mes <- lynx_Z3 %>% filter(!is.na(month))
+lynx_Z4_mes <- lynx_Z4 %>% filter(!is.na(month))
+
+cnj_Z1_mes <- cnj_Z1 %>% filter(!is.na(month))
+cnj_Z2_mes <- cnj_Z2 %>% filter(!is.na(month))
+cnj_Z3_mes <- cnj_Z3 %>% filter(!is.na(month))
+cnj_Z4_mes <- cnj_Z4 %>% filter(!is.na(month))
+```
+
+
+#7.Análisis de solapamiento estacional
+
+# Vamos a ver si los comportamientos de los conejos se solapan con los comportamientos del lince en cada una de las zonas, gracias a esto podremos saber si sus ritmos biológicos coinciden y si dependen el uno del otro.
+```{r}
+library(tidyr)
+library(ggplot2)
+
+# ============================================================
+# 1. AGRUPAR Y AGREGAR POR MES DESDE LOS DATASETS LIMPIOS
+# ============================================================
+
+# Linces
+l_m1 <- lynx_Z1_mes %>% group_by(month) %>% summarise(Lince = n()) %>% mutate(Zona = "Zona 1")
+l_m2 <- lynx_Z2_mes %>% group_by(month) %>% summarise(Lince = n()) %>% mutate(Zona = "Zona 2")
+l_m3 <- lynx_Z3_mes %>% group_by(month) %>% summarise(Lince = n()) %>% mutate(Zona = "Zona 3")
+l_m4 <- lynx_Z4_mes %>% group_by(month) %>% summarise(Lince = n()) %>% mutate(Zona = "Zona 4")
+
+linces_meses <- bind_rows(l_m1, l_m2, l_m3, l_m4)
+
+# Conejos
+c_m1 <- cnj_Z1_mes %>% group_by(month) %>% summarise(Conejo = n()) %>% mutate(Zona = "Zona 1")
+c_m2 <- cnj_Z2_mes %>% group_by(month) %>% summarise(Conejo = n()) %>% mutate(Zona = "Zona 2")
+c_m3 <- cnj_Z3_mes %>% group_by(month) %>% summarise(Conejo = n()) %>% mutate(Zona = "Zona 3")
+c_m4 <- cnj_Z4_mes %>% group_by(month) %>% summarise(Conejo = n()) %>% mutate(Zona = "Zona 4")
+
+conejos_meses <- bind_rows(c_m1, c_m2, c_m3, c_m4)
+
+# Unimos todo y calculamos proporciones relativas por mes
+datos_estacionales <- full_join(conejos_meses, linces_meses, by = c("month", "Zona")) %>%
+  mutate(
+    Conejo = replace_na(Conejo, 0),
+    Lince = replace_na(Lince, 0)
+  ) %>%
+  group_by(Zona) %>%
+  mutate(
+    p_cnj = Conejo / sum(Conejo),
+    p_lynx = Lince / sum(Lince)
+  ) %>%
+  ungroup()
+
+# ============================================================
+# 2. CÁLCULO DEL ÍNDICE DE PIANKA
+# ============================================================
+pianka_resultados <- datos_estacionales %>%
+  group_by(Zona) %>%
+  summarise(
+    Pianka_Index = sum(p_cnj * p_lynx) / (sqrt(sum(p_cnj^2)) * sqrt(sum(p_lynx^2)))
+  )
+
+print("--- ÍNDICE DE SOLAPAMIENTO DE PIANKA (DATOS LIMPIOS) ---")
+print(pianka_resultados)
+
+# ============================================================
+# 3. GRAFICAR EN UNA SOLA PESTAÑA
+# ============================================================
+datos_estacionales_grafico <- datos_estacionales %>%
+  select(Zona, month, Conejo = p_cnj, Lince = p_lynx) %>%
+  pivot_longer(cols = c(Conejo, Lince), names_to = "Especie", values_to = "Proporcion")
+
+ggplot(datos_estacionales_grafico, aes(x = factor(month), y = Proporcion, fill = Especie)) +
+  geom_area(aes(group = Especie), alpha = 0.4, position = "identity") +
+  geom_line(aes(group = Especie, color = Especie), linewidth = 1) +
+  scale_fill_manual(values = c("Conejo" = "#3182bd", "Lince" = "#de2d26")) +
+  scale_color_manual(values = c("Conejo" = "#3182bd", "Lince" = "#de2d26")) +
+  facet_wrap(~Zona, ncol = 2) +
+  labs(
+    title = "Solapamiento Estacional Real Lince vs. Conejo",
+    subtitle = "Frecuencia mensual relativa (sin datos vacíos)",
+    x = "Mes del Año",
+    y = "Proporción de Avistamientos"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    strip.text = element_text(face = "bold", size = 12),
+    legend.position = "bottom"
+  )
+
+
+#Correlación de Pearson, con climatología
+```
+#Podriamos investigar de que se esta alimentando el Lince en la zona dos que no es el conejo. En la zona uno la correlación es muy grande, los conejos son escasos o mas bien justos y no tienen los linces otra forma de comida de manera que se ven obligados a adaptarse a los patrones de los conejos. En la zona dos podemos ver que no hay correlacion entre los linces y los conejos, posiblemente esto se deba a que en estas zonas tal como sospechábamos el lince se alimenta de otros animales que no son los conejos. Casualmente tenemos pico de Linces en épocas de migración de aves. En la zona 3 lo que ocurre es que hay conejos de sobra, por tanto podemos concluir que habiendo tantísima comida el lince no se ve obligado como si ocurre en la zona 1 a adaptarse a los patrones del conejo, tambien podriamos pensar que igual que en la zona 2 existe una temporada en la que el lince no se alimenta de conejos si no de otras especies. Vemos ademas que hay un pico en verano, cuando las madres empiezan a salir con sus cachorros. En la zona 4 vemos un pico de actividad en el mes de febrero que es cuando buscan pareja. Aquí hay un solapamiento medio, quizá por falta de datos. 
+
+
+
+
+
+
+#8. Mapa de solapamiento
+
+#Vamos a hacer un mapa de calor por densidad de kernel a ver si las poblaciones de linces se agrupan cerca de las poblaciones de conejos, a ver si encontramos algún dato interesante
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# ============================================================
+# 1. PREPARAR LOS DATOS EN FORMATO LARGO (Para no pelear con las facetas)
+# ============================================================
+mapa_juntos_data <- bind_rows(
+  lynx_Z1 %>% select(decimalLongitude, decimalLatitude) %>% mutate(Zona = "Zona 1", Especie = "Lince"),
+  lynx_Z2 %>% select(decimalLongitude, decimalLatitude) %>% mutate(Zona = "Zona 2", Especie = "Lince"),
+  lynx_Z3 %>% select(decimalLongitude, decimalLatitude) %>% mutate(Zona = "Zona 3", Especie = "Lince"),
+  lynx_Z4 %>% select(decimalLongitude, decimalLatitude) %>% mutate(Zona = "Zona 4", Especie = "Lince"),
+  cnj_Z1 %>% select(decimalLongitude, decimalLatitude) %>% mutate(Zona = "Zona 1", Especie = "Conejo"),
+  cnj_Z2 %>% select(decimalLongitude, decimalLatitude) %>% mutate(Zona = "Zona 2", Especie = "Conejo"),
+  cnj_Z3 %>% select(decimalLongitude, decimalLatitude) %>% mutate(Zona = "Zona 3", Especie = "Conejo"),
+  cnj_Z4 %>% select(decimalLongitude, decimalLatitude) %>% mutate(Zona = "Zona 4", Especie = "Conejo")
+)
+
+# Mapa base de la Península
+peninsula_map <- map_data("world") %>% 
+  filter(region %in% c("Spain", "Portugal"))
+
+# ============================================================
+# 2. GENERAR EL MAPA DE SOLAPAMIENTO CON ZOOM REAL
+# ============================================================
+ggplot() +
+  # Dibujamos el mapa de España de fondo
+  geom_polygon(data = peninsula_map, aes(x = long, y = lat, group = group),
+               fill = "gray95", color = "gray80", linewidth = 0.3) +
+  
+  # Pintamos los puntos de ambas especies con colores diferentes
+  geom_point(data = mapa_juntos_data, 
+             aes(x = decimalLongitude, y = decimalLatitude, color = Especie), 
+             alpha = 0.5, size = 1) +
+  
+  # Añadimos las curvas de nivel de densidad diferenciadas por el color de la especie
+  stat_density_2d(data = mapa_juntos_data, 
+                  aes(x = decimalLongitude, y = decimalLatitude, color = Especie), 
+                  linewidth = 0.8, bins = 4, adjust = 0.6) +
+  
+  # Definimos colores fijos e intuitivos (Azul para Conejo, Rojo para Lince)
+  scale_color_manual(values = c("Conejo" = "#3182bd", "Lince" = "#de2d26")) +
+  
+  # ¡La solución definitiva! Al no usar coord_fixed ni coord_sf, 
+  # facet_wrap nos permite hacer ZOOM AUTOMÁTICO PERFECTO en cada una de las 4 zonas.
+  facet_wrap(~Zona, ncol = 2, scales = "free") +
+  
+  labs(
+    title = "Solapamiento Geoespacial Detallado por Zonas",
+    subtitle = "Micro-distribución de Linces (Rojo) vs. Conejos (Azul) con zoom adaptativo",
+    x = "Longitud",
+    y = "Latitud",
+    color = "Especie"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    strip.text = element_text(face = "bold", size = 12),
+    panel.background = element_rect(fill = "aliceblue", color = "gray90"), # Fondo marino claro
+    panel.grid.major = element_line(color = "white", linewidth = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+```
+
+#Los datos concuerdan con las hipotesis de las zonas.
