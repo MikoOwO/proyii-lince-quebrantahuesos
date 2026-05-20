@@ -916,6 +916,12 @@ leaflet() %>%
   )
 ```
 
+
+
+Para estudiar la relación entre la protección territorial y la presencia del quebrantahuesos, se calcula para cada zona homogénea el porcentaje de superficie cubierta por áreas protegidas. Estas zonas se han definido previamente mediante el análisis espacial de los avistamientos, por lo que se mantienen constantes durante esta parte del análisis.
+
+La siguiente tabla resume, para cada zona, su superficie total, la superficie protegida y el porcentaje de área protegida.
+
 ```{r, results='asis'}
 
 # --- GYPAÈTE: create polygons for all final zones (sub‑zones + other clusters) ---
@@ -955,6 +961,8 @@ quebr_polygons_final <- quebr_sf_final %>%
 
 # Zone areas
 quebr_zone_area <- quebr_polygons_final %>%
+  st_make_valid() %>%
+  st_transform(st_crs(protected_union)) %>%
   mutate(zone_area_km2 = as.numeric(st_area(.)) / 1e6)
 
 # Intersect with unified protected area
@@ -984,6 +992,141 @@ knitr::kable(quebr_zone_stats,
              caption = "Percentage of zone area covered by protected areas – Bearded Vulture")
 ```
 
+Los resultados muestran que el grado de protección varía considerablemente entre zonas. Algunas zonas presentan una cobertura protegida muy elevada, cercana al 100 %, mientras que otras tienen porcentajes bastante más bajos. Esta variabilidad permite comparar si las zonas más protegidas concentran también un mayor número de observaciones.
+
+
+```{r}
+# Nombre d'observations par zone
+quebr_counts <- quebr_obj1 %>%
+  filter(!is.na(zone_poly)) %>%
+  group_by(zone_poly) %>%
+  summarise(
+    n_obs = n(),
+    .groups = "drop"
+  )
+```
+
+
+```{r}
+quebr_zone_stats <- quebr_zone_stats %>%
+  left_join(quebr_counts, by = c("zone" = "zone_poly"))
+```
+
+
+A continuación, se analiza la relación estadística entre el porcentaje de superficie protegida y el número de observaciones registradas en cada zona. Para ello, se calcula primero la correlación de Pearson.
+
+```{r}
+cor.test(
+  quebr_zone_stats$pct_protected_area,
+  quebr_zone_stats$n_obs,
+  method = "pearson"
+)
+```
+El coeficiente de correlación obtenido es negativo y débil. Además, el valor p es superior a 0.05, por lo que no se observa una correlación estadísticamente significativa entre el porcentaje de superficie protegida y el número de observaciones del quebrantahuesos.
+
+Esto indica que, en este análisis por zonas, una mayor proporción de área protegida no implica necesariamente un mayor número de avistamientos.
+
+
+
+Para complementar el análisis, se ajusta un modelo de regresión lineal simple, utilizando el número de observaciones como variable dependiente y el porcentaje de superficie protegida como variable explicativa.
+
+```{r}
+model_quebr <- lm(
+  n_obs ~ pct_protected_area,
+  data = quebr_zone_stats
+)
+
+summary(model_quebr)
+```
+El modelo de regresión confirma la ausencia de una relación lineal clara. El coeficiente asociado al porcentaje de área protegida es negativo, pero no resulta estadísticamente significativo. Además, el valor de R² es bajo, lo que indica que el porcentaje de protección explica solo una pequeña parte de la variabilidad en el número de observaciones.
+
+Por tanto, la protección territorial por sí sola no parece ser suficiente para explicar la distribución espacial del quebrantahuesos.
+
+
+
+La siguiente figura representa esta relación de forma visual. Cada punto corresponde a una zona, mostrando en el eje horizontal el porcentaje de superficie protegida y en el eje vertical el número de observaciones.
+
+```{r}
+ggplot(quebr_zone_stats,
+       aes(x = pct_protected_area, y = n_obs)) +
+  
+  geom_point(size = 3, color = "#2E7D32") +
+  
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    color = "black"
+  ) +
+  
+  geom_text(
+    aes(label = zone),
+    vjust = -0.8,
+    size = 3
+  ) +
+  
+  labs(
+    title = "Relation entre protection et observations",
+    x = "% de zone protégée",
+    y = "Nombre d'observations"
+  )
+  
+  theme_minimal()
+```
+El gráfico muestra que no existe una tendencia positiva clara entre ambas variables. Aunque algunas zonas con alto porcentaje de protección presentan observaciones, también existen zonas muy protegidas con pocos registros. Además, una zona con un número muy elevado de observaciones influye notablemente en la escala del gráfico.
+
+
+Dado que el número de observaciones presenta grandes diferencias entre zonas, se aplica una transformación logarítmica a la variable de respuesta. Esta transformación permite reducir el efecto de valores extremos y visualizar mejor el patrón general.
+
+```{r}
+# ============================================================
+# Régression avec échelle logarithmique
+# ============================================================
+
+# Ajouter une variable logarithmique
+quebr_zone_stats$log_n_obs <- log1p(quebr_zone_stats$n_obs)
+
+# Régression logarithmique
+model_log <- lm(
+  log_n_obs ~ pct_protected_area,
+  data = quebr_zone_stats
+)
+
+summary(model_log)
+
+# Graphique logarithmique
+ggplot(
+  quebr_zone_stats,
+  aes(x = pct_protected_area, y = log_n_obs)
+) +
+  
+  geom_point(size = 3, color = "#2E7D32") +
+  
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    color = "black"
+  ) +
+  
+  geom_text(
+    aes(label = zone),
+    vjust = -0.8,
+    size = 3
+  ) +
+  
+  labs(
+    title = "Relation entre protection et observations (échelle logarithmique)",
+    x = "% de zone protégée",
+    y = "log(nombre d'observations)"
+  ) +
+  
+  theme_minimal()
+```
+Tras aplicar la transformación logarítmica, la distribución de los puntos resulta más equilibrada. Sin embargo, la tendencia sigue siendo débil y no significativa, lo que refuerza la idea de que el porcentaje de superficie protegida no explica por sí solo la presencia del quebrantahuesos.
+
+Estos resultados sugieren que otros factores, como las condiciones climáticas, la disponibilidad de alimento o características específicas del hábitat, pueden tener un papel importante en la distribución de la especie.
+
+
+La protección territorial parece ser un factor relevante para contextualizar la distribución de la especie, pero no actúa como único factor explicativo.
 
 
 # OBJETIVO 3: Estudio del hábitat (variables climáticos)
