@@ -264,7 +264,6 @@ if (file.exists(processed_data_file)) {
   poly1 <- st_read("poly1/WDPA_Apr2026_Public_shp-polygons.shp", quiet = TRUE)
   poly2 <- st_read("poly2/WDPA_Apr2026_Public_shp-polygons.shp", quiet = TRUE)
   
-  
       # Diagnostic : où se trouve l'Espagne ?
   cat("\n--- DIAGNOSTIC DES FICHIERS WDPA ---\n")
   for (nom in c("poly0", "poly1", "poly2")) {
@@ -277,15 +276,11 @@ if (file.exists(processed_data_file)) {
   }
   cat("-------------------------------------\n")
   
-  
   protected_sf_spain <- rbind(poly0, poly1, poly2) %>%
     filter(ISO3 == "ESP")
   
   saveRDS(protected_sf_spain, processed_data_file)
   rm(poly0, poly1, poly2)
-  
-
-
 }
 
 
