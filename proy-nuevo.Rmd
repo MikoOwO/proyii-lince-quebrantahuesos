@@ -806,7 +806,7 @@ leaflet() %>%
 
 ```{r}
 # ============================================================
-# Détection de zones avec DBSCAN et polygones – Lynx ibérique (CORRIGÉ)
+# Détection de zones avec DBSCAN et polygones – Lynx ibérique (AVEC OUTLIERS)
 # ============================================================
 
 library(dbscan)
@@ -831,18 +831,22 @@ lynx_obj1$cluster <- db_lynx$cluster
 cat("Nombre de zones détectées :", length(unique(db_lynx$cluster[db_lynx$cluster != 0])), "\n")
 cat("Points bruit (cluster 0) :", sum(db_lynx$cluster == 0), "\n")
 
-# 3. Créer les objets sf
+# 3. Séparer les points classifiés des outliers
 lynx_sf_clusters <- lynx_obj1 %>%
   filter(cluster != 0) %>%
   st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326, remove = FALSE)
 
-# 4. Créer les polygones convex hull
+lynx_sf_noise <- lynx_obj1 %>%
+  filter(cluster == 0) %>%
+  st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326, remove = FALSE)
+
+# 4. Créer les polygones convex hull (seulement pour les clusters)
 lynx_polygons <- lynx_sf_clusters %>%
   group_by(cluster) %>%
   summarise(geometry = st_combine(geometry)) %>%
   st_convex_hull()
 
-# 5. Carte interactive avec polygones
+# 5. Palette de couleurs pour les clusters
 pal_lynx_clusters <- colorFactor(
   palette = RColorBrewer::brewer.pal(
     min(8, length(unique(lynx_sf_clusters$cluster))), "Set1"),
@@ -852,10 +856,13 @@ pal_lynx_clusters <- colorFactor(
 # Extraire les coordonnées pour leaflet
 lynx_sf_clusters$lng <- st_coordinates(lynx_sf_clusters)[, 1]
 lynx_sf_clusters$lat <- st_coordinates(lynx_sf_clusters)[, 2]
+lynx_sf_noise$lng <- st_coordinates(lynx_sf_noise)[, 1]
+lynx_sf_noise$lat <- st_coordinates(lynx_sf_noise)[, 2]
 
+# 6. Carte interactive avec polygones + outliers en gris
 leaflet() %>%
   addProviderTiles(providers$CartoDB.Positron) %>%
-  # Polygones
+  # Polygones des zones
   addPolygons(
     data = lynx_polygons,
     color = ~pal_lynx_clusters(cluster),
@@ -863,7 +870,7 @@ leaflet() %>%
     fillOpacity = 0.2,
     label = ~paste("Zone", cluster)
   ) %>%
-  # Points
+  # Points des zones (en couleur)
   addCircleMarkers(
     data = lynx_sf_clusters,
     lng = ~lng,
@@ -879,13 +886,34 @@ leaflet() %>%
       "Année: ", año
     )
   ) %>%
+  # Points outliers en gris
+  addCircleMarkers(
+    data = lynx_sf_noise,
+    lng = ~lng,
+    lat = ~lat,
+    color = "gray",
+    radius = 2,
+    fillOpacity = 0.4,
+    label = "Bruit",
+    popup = ~paste0(
+      "<b>Bruit</b><br>",
+      "Lat: ", round(decimalLatitude, 4), "<br>",
+      "Lon: ", round(decimalLongitude, 4), "<br>",
+      "Année: ", año
+    )
+  ) %>%
   addLegend(
     position = "bottomright",
     pal = pal_lynx_clusters,
     values = lynx_sf_clusters$cluster,
     title = "Zones Lynx"
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    colors = "gray",
+    labels = "Bruit",
+    title = NULL
   )
-
 ```
 
 ```{r, results='asis'}
