@@ -45,13 +45,13 @@ Quebr <- read.csv("Quebrantahuesos.csv",   sep = "\t", quote = "")
 
 ```
 
-## 4. Limpieza de datos
+# 1. Limpieza de datos
 
 Para ambas especies (lince ibérico y quebrantahuesos) se aplica un mismo procedimiento de limpieza con el objetivo de obtener conjuntos de datos homogéneos y comparables.
 
 El proceso incluye la selección de variables relevantes, el filtrado geográfico para conservar únicamente observaciones en España y Portugal, la eliminación de coordenadas inválidas, la estandarización de la información temporal y la eliminación de registros duplicados.
 
-### 4.1 Limpieza del lince ibérico
+##1.1 Limpieza del lince ibérico
 
 Para el lince ibérico se aplica un proceso de limpieza centrado en conservar únicamente los registros útiles para el análisis espacial y temporal. En primer lugar, se seleccionan las variables necesarias, incluyendo temporalmente `gbifID` para identificar registros duplicados. Después, se filtran las observaciones localizadas en España y Portugal, se eliminan coordenadas no válidas y se transforma la información temporal a un formato homogéneo.
 
@@ -125,15 +125,15 @@ La función se aplica a ambos conjuntos de datos, obteniendo así dos bases depu
 
 Tras este proceso, se obtienen dos bases depuradas (lince ibérico y quebrantahuesos), con registros geográficamente válidos y fechas transformadas en variables de año, mes y día. Estas bases se utilizarán en los análisis temporales y espaciales posteriores.
 
-### 4.3 Resumen de la limpieza
+##1.3 Resumen de la limpieza
 
 En resumen, el proceso de limpieza permitió obtener dos conjuntos de datos homogéneos y comparables. Se eliminaron registros duplicados, observaciones sin localización válida, coordenadas erróneas y fechas no interpretables. Además, la información temporal se estandarizó para facilitar el análisis de la evolución de los avistamientos a lo largo del tiempo.
 
-## 5. Objetivo 1. Visualización de avistamientos
+# 2. Objetivo 1. Visualización de avistamientos
 
 En este objetivo se analiza la evolución temporal y la distribución espacial de los avistamientos del lince ibérico y del quebrantahuesos en España durante los últimos 35 años.
 
-### 5.1 Evolución temporal
+## 2.1 Evolución temporal
 
 En primer lugar, se analiza la evolución temporal del número de avistamientos en España durante el periodo 1990–2025. Se selecciona este intervalo porque se ajusta al horizonte temporal de 30–40 años planteado en el proyecto y permite evitar la influencia de registros demasiado antiguos y escasos.
 
@@ -200,7 +200,7 @@ En el caso del quebrantahuesos, se observa una tendencia claramente creciente en
 
 Este comportamiento puede reflejar tanto una mejora en el estado de conservación de la especie como un aumento en el esfuerzo de observación y en la disponibilidad de datos.
 
-### 5.2 Distribución espacial
+## 2.2 Distribución espacial
 
 Tras analizar la evolución temporal, se estudia a continuación la distribución espacial de los avistamientos en España.
 
@@ -280,11 +280,9 @@ plot_ly(
 
 En general, se observa que el lince ibérico presenta una distribución más concentrada en el sur de España, mientras que el quebrantahuesos se localiza principalmente en zonas montañosas del norte. Además, el número de observaciones aumenta en las últimas décadas, lo que puede reflejar tanto una mejora en la conservación como un aumento en la recopilación de datos.
 
-## 6 Objetivo 2.
-
 # ======================================================
 # OBJECTIVE 2: Analysis of the Impact of Protected Areas
-# ======================================================
+
 
 ```{r}
 # ============================================================
@@ -1161,65 +1159,50 @@ Estos resultados sugieren que otros factores, como las condiciones climáticas, 
 La protección territorial parece ser un factor relevante para contextualizar la distribución de la especie, pero no actúa como único factor explicativo.
 
 
-# OBJETIVO 3: Estudio del hábitat (variables climáticos)
-# ======================================================
 
+# ======================================================
+# OBJETIVO 3: Estudio del hábitat (variables climáticos)
 ## 3.1 hábitat del lince ibérico
 
 Pequeña limpieza de datos para OBJETIVO 3
-EXCLUIMOS los datos antes de 2007, por la anomalía
+EXCLUIMOS los datos antes de 2007, por la anomalía.
 ```{r}
 lynx_sf_clusters <- lynx_sf_clusters[lynx_sf_clusters$year > 2007,]
 ```
 
-Utilizamos las zonas agrupadas del objetivo 2 y calculamos un punto centroide (representante) para cada zona.
-Si la zona es muy grande, pues 3 puntos mediante k-means.
+Utilizamos las zonas agrupadas del objetivo 2 y calculamos un punto centroide (representante) para cada zona. (Se le indica subcluster 1 porque para QUEBRANTAHUESOS si se ha tenido en cuenta subzonas, para poder usar la misma función y procedimiento en ambas especies)
+
 ```{r}
 library(sf)
-library(dplyr)
 
 zones_lynx <- lynx_sf_clusters %>%
   group_by(cluster) %>%
-  group_modify(~{
-    
-    df <- .x
-    coords <- st_coordinates(df)
-    
-    # criterio de tamaño, si tiene número de filas > 
-    if (nrow(df) > 100) {
-      k <- 3   # zonas grandes
-    } else {
-      k <- 1   # zonas pequeñas
-    }
-    
-    # hacer una subdivision de zonas dentro de la zona grande
-    km <- kmeans(coords, centers = k, nstart = 20)
-    # calcular centroides
-    centroids <- as.data.frame(km$centers)
-    colnames(centroids) <- c("lon", "lat")
-    
-    centroids$cluster <- unique(df$cluster)
-    centroids$subcluster <- 1:nrow(centroids)
-    
-    centroids
-  }) %>%
-  ungroup()
+  summarise(
+    geometry = st_centroid(st_union(geometry))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    lon = st_coordinates(geometry)[,1],
+    lat = st_coordinates(geometry)[,2],
+    subcluster = 1   # para mantener estructura
+  )
+
 ```
 
 
 ### FASE 1: DESCARGA DE DATOS CLIMÁTICOS
 
-Mediante una función con GET, podemos obtener desde el API del OPENMETEO valores de variables climáticos diarios que nos resultan interesantes. En este caso hemos escogido la temperatura media, temperatura máxima, temperatura mínima y la precipitación acumulada.
+  La función "get_openmeteo_daily_lynx" recibe 4 parámetros: latitud, longitud, fecha de comienzo y fecha fin. Envía estos parámetros al API de OPENMETEO y pide 4 variables climáticos con valores diarios mediante GET: temperatura media, temperatura máxima, temperatura mínima y precipitación acumulada. El API nos devuelve un JSON con toda la información que necesitamos, convertimos el JSON a objeto R y extraemos de allí lo que nos interesa (ya que también devuelve otros datos como la magnitud en el que se midió los parámetros, la temperatura por defecto es ºC y precipitación mm).
+  Iteramos fila por fila en nuestra tabla zones_lynx, donde cada fila es una subzona de una zona con su longitud y latitud, unimos todos nuestros resultado en un único dataframe llamado "meteo_lynx_zonas_daily".Una vez obtenemos los resultados, dejamos eval=FALSE para que no vuelva a llamar el API y trabajmos sobre el resultado guardado.
 
-Una vez obtenemos los resultados, dejamos eval=FALSE para que no vuelva a llamar el API y trabajmos sobre el resultado guardado.
-
-Como resultado debería tener alrededor de 17años x 365 días x 8 zonas (subzonas incluidas) = 49640 filas
-
+  Como resultado debería tener alrededor de 17años x 365 días x 4 zonas (subzonas incluidas) = 24820 filas
+  
 ```{r,eval=FALSE}
 
 # función de descarga diaria para lince
 library(httr)
 library(jsonlite)
+
 
 get_openmeteo_daily_lynx <- function(lat, lon, start_date, end_date) {
 
@@ -1283,7 +1266,7 @@ for (i in seq_len(nrow(zones_lynx))) {
 
   resultados_meteolynx[[i]] <- meteo_lynx_i
 
-  Sys.sleep(25)  # MUY importante para evitar error 429 (bloqueo API)
+  Sys.sleep(20)  # MUY importante para evitar error 429 (bloqueo API)
 }
 
 # unir todo
@@ -1298,6 +1281,8 @@ write.csv(meteo_lynx_zonas_daily,"meteo_lynx_estacion.csv")
 
 
 ### FASE 2: ESTADÍSTICA ESTACIONAL
+  Cargamos los datos obtenidos a partir de la API de Open-Meteo, almacenados bajo el nombre de "lynx_obj3". Aunque los datos originales presentan una resolución diaria, se ha optado por trabajar a escala estacional, ya que las variables climáticas no suelen experimentar cambios significativos de un día a otro. Este enfoque permite analizar de forma más clara las tendencias y patrones climáticos relevantes.
+  Para ello se ha creado una columna "season" a partir de las fechas, indicando estaciones correspondientes a cada fila. Agrupamos por año, estación, zona y subzona, calculando una media para cada variable climático.
 ```{r}
 # cargar datos
 lynx_obj3<- readRDS("meteo_lynx_daily_by_zone_2008_2024.rds")
@@ -1321,7 +1306,7 @@ lynx_obj3 <- lynx_obj3 %>%
 lynx_obj3 <- lynx_obj3 %>%
   mutate(year = lubridate::year(date))
 
-# agrupar mediante año, estación, zona y subzona
+# agrupar mediante año, estación, zona
 lynx_media_estacional <- lynx_obj3 %>%
   group_by(year,season,cluster) %>%
   summarise(
@@ -1334,13 +1319,15 @@ lynx_media_estacional <- lynx_obj3 %>%
 
 
 ### FASE 3: CRUZAR LOS AVISTAMIENTOS Y LAS VARIABLES CLIMÁTICAS
-Queremos cruzar los datos climáticos con los avistamientos.
-Para los avistamientos se ha realizado un recuento por zonas (subzonas), año y season.
+  Queremos cruzar los datos climáticos con los avistamientos.
+Para cada avistamiento se ha clasificado una subzona mediante distancia, una estación mediante fecha. Para cada combinación de año, estación, zona y subzona realizar un recuento de número de avistamientos y cruzar con los datos climáticos.
 
 ```{r}
 # unificación de nombre para trabajar más fácil
-#lynx_sf_clusters <- lynx_sf_clusters %>%
-  #rename(lon = lng)
+if ("lng" %in% names(lynx_sf_clusters)) {
+  lynx_sf_clusters <- lynx_sf_clusters %>%
+    rename(lon = lng)
+}
 
 # añadir estación dependiendo de la fecha a los avistamientos para realizar agrupaciones estacionales
 
@@ -1355,38 +1342,10 @@ lynx_obj3_avistamiento <- lynx_sf_clusters %>%
     )
   )
 
-# añadir también subzonas
-library(dplyr)
-library(purrr)
-library(geosphere)
-
-# función para asignar subcluster a un punto
-asignar_subcluster <- function(lon, lat, cluster, subzonas) {
-  
-  subs <- subzonas %>% filter(cluster == !!cluster)
-  
-  # calcular distancias
-  distancias <- distHaversine(
-    matrix(c(lon, lat), ncol = 2),
-    matrix(c(subs$lon, subs$lat), ncol = 2)
-  )
-  
-  # índice del más cercano
-  idx <- which.min(distancias)
-  
-  return(subs$subcluster[idx])
-}
-
-# aplicar a todos los avistamientos
-lynx_obj3_avistamiento <- lynx_obj3_avistamiento %>%
-  rowwise() %>%
-  mutate(subcluster = asignar_subcluster(lon, lat, cluster, zones_lynx)) %>%
-  ungroup()
-
 
 # realizar un recuento de número de avistamientos agrupado por año y estación
 lynx_recuento <- lynx_obj3_avistamiento %>%
-  group_by(año, season,cluster,subcluster) %>%   # o año, estacion según tus nombres
+  group_by(año, season,cluster) %>%
   summarise(avistamientos = n(), .groups = "drop")
 
 # unificación de nombres para poder hacer JOIN
@@ -1399,56 +1358,20 @@ lynx_obj3_final <- lynx_media_estacional %>%
   left_join(lynx_recuento, by = c("year", "season", "cluster"))
 
 # rellenar Na
-
 lynx_obj3_final <- lynx_obj3_final %>%
   mutate(avistamientos = replace_na(avistamientos, 0))
 ```
 ### GRAFICAR
 
 ```{r}
-library(ggplot2)
-
-ggplot(lynx_obj3_final%>% filter(avistamientos > 0), aes(x = tmean, y = avistamientos)) +
-  geom_point(alpha = 0.5) +
-  geom_smooth(method = "lm") +
-  facet_wrap(~ cluster)
-
-ggplot(lynx_obj3_final%>% filter(avistamientos > 0), aes(x = prec, y = avistamientos)) +
-  geom_point(alpha = 0.5) +
-  geom_smooth(method = "lm") +
-  facet_wrap(~ cluster)
-```
-```{r}
-
-ggplot(lynx_obj3_final, aes(x = year, y = avistamientos, color = season)) +
-  geom_smooth(se = FALSE) +
-  facet_wrap(~ cluster)
-
-```
-
-
-
-Resultado 1:
-evolución temporal
-Escalamos para que estén en la misma magnitud
-
-```{r, fig.width=12, fig.height=15}
 library(dplyr)
-# crear una columna year-season
+# fijar niveles para los seasons
 lynx_plot <- lynx_obj3_final %>%
   mutate(
     season = factor(season,
-                    levels = c("Invierno", "Primavera", "Verano", "Otoño"))
-  ) %>%
-  arrange(year, season) %>%
-  mutate(
-  year_season = paste(year, season, sep = "-"),
-  year_season = factor(year_season, levels = unique(year_season))
-)
-
-# crear una columna para cluster-subcluster
-lynx_plot <- lynx_plot %>%
-  mutate(subzona_id = paste(cluster, subcluster, sep = "_"))
+                    levels = c("Invierno", "Primavera", "Verano", "Otoño"),
+                    ordered = TRUE)
+  )
 
 
 # escalar
@@ -1461,105 +1384,168 @@ lynx_plot <- lynx_plot %>%
     temp_min_scaled = as.numeric(scale(tmin)),
     prec_scaled = as.numeric(scale(prec))
   )
-
-# columna
+# crear un índice numérico para año-season
 lynx_plot <- lynx_plot %>%
-  mutate(
-    season_num = as.numeric(season),
-    time = year + (season_num - 1) / 4
-  )
-
-# dibujar la gráfica
-
-
-
-ggplot(lynx_plot, aes(x = time)) +
-  geom_line(aes(y = av_scaled, color = "Avistamientos",group = 1), size = 1) +
-  geom_line(aes(y = temp_scaled, color = "Temperatura",group = 1), size = 1) +
-  facet_wrap(~ subzona_id, ncol=2) +
-  labs(y = "Valor escalado", color = "Variable")+
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-
-
-
-
-p <- ggplot(lynx_plot, aes(x = time)) +
-  geom_line(aes(y = av_scaled, color = "Avistamientos", group = 1)) +
-  geom_line(aes(y = temp_scaled, color = "Temperatura", group = 1)) +
-  facet_wrap(~ subzona_id, ncol=2)
-
-ggplotly(p)
-
+  arrange(year, season) %>%
+  mutate(time_id = row_number())
 ```
 
 
-
-
+#### BOXPLOT POR ESTACIÓN
+Este boxplot nos permite visualizar en que estación hay un mayor número de avistamientos.
 
 ```{r}
-library(ggplot2)
-# TEMPERATURA MEDIA
-ggplot(lynx_media_estacional,
-       aes(x = year, y = tmean, color = season, group = season)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "Temperatura media (°C)",
-    color = "Estación",
-    title = "Evolución de la temperatura media por estación"
-  ) +
-  theme_minimal()
+p <- ggplot(lynx_plot, aes(x = season, y = avistamientos)) +
+  geom_boxplot() +
+  facet_wrap(~ cluster)
+ggplotly(p)
+```
 
-# TEMPERATURA MAXIMA
-ggplot(lynx_media_estacional,
-       aes(x = year, y = tmax, color = season, group = season)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "Temperatura máxima (°C)",
-    color = "Estación",
-    title = "Evolución de la temperatura máxima por estación"
-  ) +
-  theme_minimal()
+  Como muestra el BOXPLOT, claramente destacan las estaciones Invierno y Otoño, es decir, en Invierno y Otoño se ha detectado más avistamientos que otras estaciones, especialmente destacan las zonas 1 y 2, mientras en zona 3 y 4 hay pocos datos, por lo que no es interesante analizar en cuanto a su relación con variable climático.
 
-# TEMPERATURA MINIMA
-ggplot(lynx_media_estacional,
-       aes(x = year, y = tmin, color = season, group = season)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "Temperatura mínima (°C)",
-    color = "Estación",
-    title = "Evolución de la temperatura mínima por estación"
-  ) +
-  theme_minimal()
+```{r}
+table(lynx_obj3_avistamiento$cluster)
+```
+Efectivamente se puede comprobar que la zona 3 tiene 6 avistamientos y en zona 4 33 avistamientos durante 17 años. Lo quitamos de la tabla para plotear y nos quedamos solo con las zonas 1 y 2.
 
-# PRECIPITACIÓN MEDIA
-ggplot(lynx_media_estacional,
-       aes(x = year, y = prec, color = season, group = season)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "precipitación (mm)",
-    color = "Estación",
-    title = "Evolución de la precipitación media por estación"
-  ) +
-  theme_minimal()
+```{r}
+lynx_plot <- lynx_plot %>%
+  filter(cluster %in% c(1,2))
 ```
 
 
-------------------------------------------------------------------------------------
-------------------------------------------------------------------------------------
+#### MEDIAS POR ESTACIÓN
+Calculamos la media de las variables climáticos y escalamos. Graficamos las medias climáticas y los avistamientos por estación para intentar encontrar algún patrón entre ellas.
+```{r}
+lynx_plot %>%
+  group_by(season,cluster) %>%
+  summarise(
+    avistamientos = mean(av_scaled, na.rm = TRUE),
+    tmean = mean(temp_scaled, na.rm = TRUE),
+    prec = mean(prec_scaled,na.rm = TRUE)
+  ) %>%
+  ggplot(aes(x = season)) +
+  geom_line(aes(y = avistamientos, color = "Avistamientos", group = 1)) +
+  geom_line(aes(y = tmean, color = "Temperatura", group = 1)) +
+  geom_line(aes(y = prec, color = "Precipitacion", group = 1)) +
+  facet_wrap(~ cluster)
 
+```
+  En este gráfico se representan las medias por estación de las variables climáticas y los avistamientos, tras haber sido estandarizadas, con el objetivo de comparar sus patrones de variación.
+  En cuanto a la temperatura, se observa el comportamiento esperado: valores más bajos en invierno, que aumentan progresivamente hasta alcanzar su máximo en verano, para posteriormente descender de nuevo hacia otoño e invierno. Este patrón refleja el ciclo estacional característico.
+  Por otro lado, la precipitación presenta un comportamiento inverso al de la temperatura, con valores más elevados en invierno y otoño, y mínimos en verano, lo que evidencia una relación negativa entre ambas variables.
+  En relación con los avistamientos, los resultados muestran diferencias entre clusters. En el cluster 1 se aprecia un patrón en forma de “V”, con menores valores en verano y mayores en invierno y otoño. Sin embargo, en el cluster 2 el patrón no es simétrico, destacando un aumento significativo de los avistamientos en otoño, lo que sugiere un comportamiento estacional más marcado en esta estación.
+
+
+
+#### Correlaciones
+  Se ha empleado tanto el coeficiente de Pearson, que mide relaciones lineales, como el de Spearman, que permite detectar relaciones monótonas no necesariamente lineales, proporcionando una visión más completa de la asociación entre variables.
+```{r}
+# pearson
+# relación lineal
+lynx_plot %>%
+  group_by(season) %>%
+  summarise(
+    cor_tmean = cor(avistamientos, tmean, use = "complete.obs"),
+    cor_tmax  = cor(avistamientos, tmax, use = "complete.obs"),
+    cor_tmin  = cor(avistamientos, tmin, use = "complete.obs"),
+    cor_prec  = cor(avistamientos, prec, use = "complete.obs")
+  )
+
+# spearman
+# relación monótona
+lynx_plot %>%
+  group_by(season) %>%
+  summarise(
+    cor_tmean = cor(avistamientos, tmean, method = "spearman", use = "complete.obs"),
+    cor_tmax  = cor(avistamientos, tmax, method = "spearman", use = "complete.obs"),
+    cor_tmin  = cor(avistamientos, tmin, method = "spearman", use = "complete.obs"),
+    cor_prec  = cor(avistamientos, prec, method = "spearman", use = "complete.obs")
+  )
+
+library(corrplot)
+
+lynx_plot %>%
+  group_split(season) %>%
+  purrr::walk(function(df) {
+    est <- unique(df$season)
+    vars <- df %>%
+      select(avistamientos, tmean, tmax, tmin, prec)
+    
+    corrplot(cor(vars, use = "complete.obs"), method = "color")
+    title(main = paste("Estación:", est))
+  })
+
+
+```
+
+  Para cada estación se ha analizado la correlación entre el número de avistamientos y la variable climática.
+  Tras excluir las zonas con escasa presencia de avistamientos, las correlaciones muestran un patrón más claro. En la mayoría de estaciones la relación entre variables climáticas y avistamientos es débil o inexistente. Sin embargo, en otoño se observa una correlación fuerte, especialmente con la temperatura mínima (r ≈ 0.73), lo que indica que esta variable podría desempeñar un papel relevante en la actividad de la especie durante esta estación.
+
+
+#### Gráfico de dispersión (scatterplot) con recta de regresión
+  Ahora vamos a centrarnos en el comportamiento del Otoño mediante un gráfico de dispersión en la que representa una recta roja de regresión lineal.
+```{r}
+lynx_plot %>%
+  filter(season == "Otoño") %>%
+  ggplot(aes(x = tmin, y = avistamientos)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  facet_wrap(~ cluster)
+```
+  Observamos claramente que tanto en la zona 1 como en la zona 2 existe una relación positiva bastante fuerte, es decir, cuando sube la temperatura mínima, sube el número de avistamientos.
+
+
+#### Gráfico temperatura x avistamiento en evolución temporal (OTOÑO) escalada
+```{r}
+
+lynx_plot %>%
+  filter(season == "Otoño") %>%
+  group_by(year) %>%
+  summarise(
+    av = mean(avistamientos, na.rm = TRUE),
+    tmin = mean(tmin, na.rm = TRUE)
+  ) %>%
+  mutate(
+    av_s = scale(av),
+    tmin_s = scale(tmin)
+  ) %>%
+  ggplot(aes(x = year)) +
+  geom_line(aes(y = av_s, color = "Avistamientos")) +
+  geom_line(aes(y = tmin_s, color = "Temp mínima")) +
+  geom_point(aes(y = av_s, color = "Avistamientos")) +
+  geom_point(aes(y = tmin_s, color = "Temp mínima"))
+
+
+# solo para zona 1
+lynx_plot %>%
+  filter(season == "Otoño",cluster == "1") %>%
+    mutate(
+    av_s = scale(avistamientos),
+    tmin_s = scale(tmin)
+  ) %>%
+  ggplot(aes(x = year)) +
+  geom_line(aes(y = av_s, color = "Avistamientos")) +
+  geom_line(aes(y = tmin_s, color = "Temp mínima"))
+
+# solo para zona 2
+lynx_plot %>%
+  filter(season == "Otoño", cluster == "2") %>%
+    mutate(
+    av_s = scale(avistamientos),
+    tmin_s = scale(tmin)
+  ) %>%
+  ggplot(aes(x = year)) +
+  geom_line(aes(y = av_s, color = "Avistamientos")) +
+  geom_line(aes(y = tmin_s, color = "Temp mínima"))
+```
+  La evolución temporal (tanto para zona 1 como zona 2) muestra que la relación entre la temperatura mínima y los avistamientos no es homogénea a lo largo del tiempo. En los primeros años del periodo de estudio no se observa una asociación clara entre ambas variables, mientras que en los años más recientes presentan un patrón más sincronizado. Esto sugiere que el efecto de la temperatura no es constante, sino que puede depender del contexto temporal o de la variabilidad observada en cada periodo.
+  
+
+  En fin, los resultados muestran que la relación entre las variables climáticas y los avistamientos no es uniforme, sino que se concentra en determinadas estaciones y zonas. En particular, la temperatura mínima en otoño presenta una correlación notablemente elevada, lo que sugiere un posible efecto específico de esta variable en la dinámica de la especie.
+
+------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------
 
 
 ## 3.2 hábitat de Quebrantahuesos
@@ -1593,7 +1579,7 @@ zones_quebr <- quebr_sf_clusters %>%
     coords <- st_coordinates(df)
     
     # criterio de tamaño, si tiene número de filas > 
-    if (nrow(df) > 100) {
+    if (nrow(df) > 1000) {
       k <- 3   # zonas grandes
     } else {
       k <- 1   # zonas pequeñas
@@ -1614,7 +1600,7 @@ zones_quebr <- quebr_sf_clusters %>%
 ```
 
 
-FASE 1: descarga de datos meteológicos
+###FASE 1: descarga de datos meteológicos
 ```{r,eval=FALSE}
 
 # función de descarga diaria para quebrantahuesos 
@@ -1664,7 +1650,6 @@ get_openmeteo_daily_quebr <- function(lat, lon, start_date, end_date) {
 # creamos una lista resultado para ir metiendo los resultados
 resultados_meteoquebr <- list()
 
-
 # para cada zona, aplicar la función meteo
 for (i in seq_len(nrow(zones_quebr))) {
 
@@ -1687,7 +1672,7 @@ for (i in seq_len(nrow(zones_quebr))) {
 
   resultados_meteoquebr[[i]] <- meteo_quebr_i
 
-  Sys.sleep(25)  # MUY importante para evitar error 429 (bloqueo API)
+  Sys.sleep(20)  # MUY importante para evitar error 429 (bloqueo API)
 }
 
 # unir todo
@@ -1701,13 +1686,12 @@ write.csv(meteo_quebr_zonas_daily,"meteo_quebr_estacion.csv")
 ```
 
 
-FASE 2: preparar fechas + estaciones
+###FASE 2: ESTADÍSTICA ESTACIONAL
 ```{r}
 # cargar datos
 quebr_obj3<- readRDS("meteo_quebr_daily_by_zone_2008_2024.rds")
 # añadir estación dependiendo de la fecha
-library(dplyr)
-library(lubridate)
+
 
 quebr_obj3 <- quebr_obj3 %>%
   mutate(
@@ -1720,10 +1704,7 @@ quebr_obj3 <- quebr_obj3 %>%
     )
   )
 
-```
 
-FASE 3: Estadística estacional
-```{r}
 quebr_obj3 <- quebr_obj3 %>%
   mutate(year = lubridate::year(date))
 
@@ -1739,7 +1720,7 @@ mean_wdir <- function(x) {
 
 # calcular una única variable meteológica para cada estación de cada año.
 quebr_media_estacional <- quebr_obj3 %>%
-  group_by(year, season, cluster) %>%
+  group_by(year,season,cluster,subcluster) %>%
   summarise(
     tmean = mean(tmean, na.rm = TRUE),
     tmax  = mean(tmax,  na.rm = TRUE),
@@ -1748,22 +1729,20 @@ quebr_media_estacional <- quebr_obj3 %>%
     wspeed = mean(wspeed, na.rm = TRUE),
     wdir = mean_wdir(wdir),
     .groups = "drop"
+
   )
-
-mapeo_zonas <- quebr_obj1 %>%
-  filter(!is.na(zone_poly)) %>%
-  distinct(zone_poly, cluster) %>%
-  rename(parent_cluster = cluster)
-
-
 ```
 
+### FASE 3: CRUZAR LOS AVISTAMIENTOS Y LAS VARIABLES CLIMÁTICAS
 
-FASE 4: cruzación avistamientos
 ```{r}
+# unificación de nombre para trabajar más fácil
+if ("lng" %in% names(lynx_sf_clusters)) {
+  lynx_sf_clusters <- lynx_sf_clusters %>%
+    rename(lon = lng)
+}
+
 # añadir estación dependiendo de la fecha a los avistamientos para realizar agrupaciones estacionales
-
-
 
 quebr_obj3_avistamiento <- quebr_sf_clusters %>%
   mutate(
@@ -1776,142 +1755,329 @@ quebr_obj3_avistamiento <- quebr_sf_clusters %>%
     )
   )
 
+
 # añadir también subzonas
-library(dplyr)
-library(purrr)
-library(geosphere)
+# función para asignar subcluster a un punto
+asignar_subcluster <- function(lon, lat, cluster, subzonas) {
+  
+  subs <- subzonas %>% filter(cluster == !!cluster)
+  
+  # calcular distancias
+  distancias <- distHaversine(
+    matrix(c(lon, lat), ncol = 2),
+    matrix(c(subs$lon, subs$lat), ncol = 2)
+  )
+  
+  # índice del más cercano
+  idx <- which.min(distancias)
+  
+  return(subs$subcluster[idx])
+}
 
-# cogemos la función para asignar zonas de lynx
 # aplicar a todos los avistamientos
-
-
-
-quebr_avistamientos <- quebr_obj1 %>%
-  filter(!is.na(zone_poly)) %>%
-  mutate(
-    year = año,
-    season = case_when(
-      mes %in% c(3,4,5)   ~ "Primavera",
-      mes %in% c(6,7,8)   ~ "Verano",
-      mes %in% c(9,10,11) ~ "Otoño",
-      TRUE                ~ "Invierno"
-    )
-  ) %>%
-  count(year, season, zone_poly, name = "avistamientos")
+quebr_obj3_avistamiento <- quebr_obj3_avistamiento %>%
+  rowwise() %>%
+  mutate(subcluster = asignar_subcluster(lon, lat, cluster, zones_quebr)) %>%
+  ungroup()
 
 
 # realizar un recuento de número de avistamientos agrupado por año y estación
-quebr_recuento <- quebr_avistamientos %>%
-  group_by(year, season, zone_poly) %>%
+quebr_recuento <- quebr_obj3_avistamiento %>%
+  group_by(año, season,cluster,subcluster) %>%  
   summarise(avistamientos = n(), .groups = "drop")
 
 # unificación de nombres para poder hacer JOIN
-#quebr_recuento <- quebr_recuento %>%
-  #rename(year = año)
+
+quebr_recuento <- quebr_recuento %>%
+  rename(year = año)
+
 
 # cruzamos los datos: crear una tabla que contenga a la vez recuento y variables climáticas
-quebr_obj3_final <- quebr_avistamientos %>%
-  left_join(mapeo_zonas, by = "zone_poly") %>%               # añade parent_cluster
-  left_join(quebr_media_estacional, 
-            by = c("year", "season", "parent_cluster" = "cluster")) %>%
-  mutate(avistamientos = replace_na(avistamientos, 0))
+quebr_obj3_final <- quebr_media_estacional %>%
+  left_join(quebr_recuento, by = c("year", "season", "cluster", "subcluster"))
 
 # rellenar Na
-quebr_obj3_final <- quebr_avistamientos %>%
-  left_join(mapeo_zonas, by = "zone_poly") %>%               # añade parent_cluster
-  left_join(quebr_media_estacional, 
-            by = c("year", "season", "parent_cluster" = "cluster")) %>%
+quebr_obj3_final <- quebr_obj3_final %>%
   mutate(avistamientos = replace_na(avistamientos, 0))
-
-
 ```
 
+### GRAFICAR
+```{r}
+library(dplyr)
+# fijar niveles para los seasons
+quebr_plot <- quebr_obj3_final %>%
+  mutate(
+    season = factor(season,
+                    levels = c("Invierno", "Primavera", "Verano", "Otoño"),
+                    ordered = TRUE)
+  )
 
 
+# escalar
+quebr_plot <- quebr_plot %>%
+  ungroup() %>%
+  mutate(
+    av_scaled = as.numeric(scale(avistamientos)),
+    temp_scaled = as.numeric(scale(tmean)),
+    temp_max_scaled = as.numeric(scale(tmax)),
+    temp_min_scaled = as.numeric(scale(tmin)),
+    prec_scaled = as.numeric(scale(prec)),
+    wspeed_scaled = as.numeric(scale(wspeed))
+  )
+# crear un índice numérico para año-season
+quebr_plot <- quebr_plot %>%
+  arrange(year, season) %>%
+  mutate(time_id = row_number())
 
-
+# crear una columna para zona-subzona
+quebr_plot <- quebr_plot %>%
+  mutate(subzona_id = paste(cluster, subcluster, sep = "_"))
+```
 
 ```{r}
-library(ggplot2)
-
-ggplot(quebr_obj3_final %>% filter(avistamientos > 0),
-       aes(x = tmean, y = avistamientos)) +
-  geom_point(alpha = 0.5) +
-  geom_smooth(method = "lm") +
-  facet_wrap(~ zone_poly)
-
-
+table(quebr_obj3_avistamiento$cluster,
+      quebr_obj3_avistamiento$subcluster)
 ```
-
-```{r warning=FALSE}
-
-ggplot(quebr_obj3_final, aes(x = year, y = avistamientos, color = season)) +
-  geom_smooth(se = FALSE) +
-  facet_wrap(~ zone_poly)
-
-
-ggplot(quebr_media_estacional,
-       aes(x = year, y = wspeed, color = season)) +
-  geom_line() + geom_point() +
-  facet_wrap(~ cluster) +
-  labs(x = "Año", y = "Velocidad del viento",
-       title = "Evolución de la velocidad del viento por estación") +
-  theme_minimal()
-```
-
-
-
-
+Algunas zonas con muy pocos avistamientos no lo tendremos en cuenta, como la zona 4,7,8,9,11,12,13 y 14, con avistamientos inferiores a 30.
 
 ```{r}
-# velocidad de viento
-ggplot(quebr_media_estacional,
-       aes(x = year, y = wspeed, color = season)) +
-  geom_line() +
-  geom_point() +
-  facet_wrap(~ cluster) +
-  labs(
-    x = "Año",
-    y = "Velocidad del viento",
-    title = "Evolución de la velocidad del viento por estación"
-  ) +
-  theme_minimal()
-
+quebr_plot <- quebr_plot %>%
+  filter(cluster %in% c(1,2,3,5,6,10))
 ```
-
+#### BOXPLOT POR ESTACIÓN
+Este boxplot nos permite visualizar en que estación hay un mayor número de avistamientos.
 
 ```{r}
-# direccion de viento
-ggplot(quebr_media_estacional,
-       aes(x = season, y = wdir, fill = season)) +
+p <- ggplot(
+  quebr_plot, aes(x = season, y = avistamientos)) +
   geom_boxplot() +
-  facet_wrap(~ cluster) +
-  labs(
-    y = "Dirección del viento (grados)",
-    title = "Dirección del viento por estación"
-  ) +
-  theme_minimal()
-# velocidad de viento también
-ggplot(quebr_obj3, aes(x = wdir)) +
-  geom_histogram(binwidth = 30, fill = "steelblue") +
-  coord_polar(start = 0) +
-  facet_wrap(~ season) +
-  facet_wrap(~ cluster) +
-  labs(title = "Rosa de (dirección) viento por estación")
+  facet_wrap(~ subzona_id)
+ggplotly(p)
+```
+
+
+Al parecer, para quebrantahuesos, suele haber un mayor número de avistamientos (más actividad ) en Primavera y Verano.
+
+
+#### MEDIAS POR ESTACIÓN
+Calculamos la media de las variables climáticos y escalamos. Graficamos las medias climáticas y los avistamientos por estación para intentar encontrar algún patrón entre ellas.
+```{r}
+quebr_plot %>%
+  group_by(season, cluster, subzona_id) %>%
+  summarise(
+    avistamientos = mean(av_scaled, na.rm = TRUE),
+    tmean = mean(temp_scaled, na.rm = TRUE),
+    prec = mean(prec_scaled, na.rm = TRUE),
+    wspeed = mean(wspeed_scaled, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = season)) +
+  geom_line(aes(y = avistamientos, color = "Avistamientos", group = 1)) +
+  geom_line(aes(y = tmean, color = "Temperatura", group = 1)) +
+  geom_line(aes(y = prec, color = "Precipitacion", group = 1)) +
+  geom_line(aes(y = wspeed, color = "Velocidad viento", group = 1)) +
+  facet_wrap(~ subzona_id)
 
 ```
+
+#### Correlaciones
+  Se ha empleado tanto el coeficiente de Pearson, que mide relaciones lineales, como el de Spearman, que permite detectar relaciones monótonas no necesariamente lineales, proporcionando una visión más completa de la asociación entre variables.
+```{r}
+# pearson
+# relación lineal
+cor_df <-  quebr_plot %>%
+  group_by(season,subzona_id) %>%
+  summarise(
+    cor_tmean = cor(avistamientos, tmean, use = "complete.obs"),
+    cor_tmax  = cor(avistamientos, tmax, use = "complete.obs"),
+    cor_tmin  = cor(avistamientos, tmin, use = "complete.obs"),
+    cor_prec  = cor(avistamientos, prec, use = "complete.obs"),
+    cor_wspeed  = cor(avistamientos, wspeed, use = "complete.obs")
+  )
+cor_df
+# spearman
+# relación monótona
+quebr_plot %>%
+  group_by(season,subzona_id) %>%
+  summarise(
+    cor_tmean = cor(avistamientos, tmean, method = "spearman", use = "complete.obs"),
+    cor_tmax  = cor(avistamientos, tmax, method = "spearman", use = "complete.obs"),
+    cor_tmin  = cor(avistamientos, tmin, method = "spearman", use = "complete.obs"),
+    cor_prec  = cor(avistamientos, prec, method = "spearman", use = "complete.obs"),
+    cor_wspeed  = cor(avistamientos, wspeed, method = "spearman", use = "complete.obs")
+  )
+
+library(corrplot)
+
+quebr_plot %>%
+  group_split(season) %>%
+  purrr::walk(function(df) {
+    est <- unique(df$season)
+    vars <- df %>%
+      select(avistamientos, tmean, tmax, tmin, prec, wspeed)
+    
+    corrplot(cor(vars, use = "complete.obs"), method = "color")
+    title(main = paste("Estación:", est))
+  })
+
+
+cor_df %>%
+  ggplot(aes(x = subzona_id, y = cor_tmean, fill = cor_tmean)) +
+  geom_col() +
+  facet_wrap(~ season) +
+  coord_flip()+
+    scale_fill_gradient2(
+    low = "blue",    # correlación negativa
+    mid = "white",   # cerca de 0
+    high = "red"     # correlación positiva
+  )
+
+
+cor_df %>%
+  ggplot(aes(x = subzona_id, y = cor_tmin, fill = cor_tmin)) +
+  geom_col() +
+  facet_wrap(~ season) +
+  coord_flip()+
+  scale_fill_gradient2(
+    low = "blue",    # correlación negativa
+    mid = "white",   # cerca de 0
+    high = "red"     # correlación positiva
+  )
+
+
+cor_df %>%
+  ggplot(aes(x = subzona_id, y = cor_tmax, fill = cor_tmax)) +
+  geom_col() +
+  facet_wrap(~ season) +
+  coord_flip()+
+    scale_fill_gradient2(
+    low = "blue",    # correlación negativa
+    mid = "white",   # cerca de 0
+    high = "red"     # correlación positiva
+  )
+
+cor_df %>%
+  ggplot(aes(x = subzona_id, y = cor_prec, fill = cor_prec)) +
+  geom_col() +
+  facet_wrap(~ season) +
+  coord_flip()+
+    scale_fill_gradient2(
+    low = "blue",    # correlación negativa
+    mid = "white",   # cerca de 0
+    high = "red"     # correlación positiva
+  )
+
+cor_df %>%
+  ggplot(aes(x = subzona_id, y = cor_wspeed, fill = cor_wspeed)) +
+  geom_col() +
+  facet_wrap(~ season) +
+  coord_flip()+
+    scale_fill_gradient2(
+    low = "blue",    # correlación negativa
+    mid = "white",   # cerca de 0
+    high = "red"     # correlación positiva
+  )
+```
+  Interpretación general:
+  El análisis de correlaciones por subzona y estación revela una fuerte heterogeneidad espacial en la relación entre las variables climáticas y el número de avistamientos. Mientras que a nivel global las correlaciones parecían débiles o inconsistentes, el análisis desagregado muestra patrones claros en determinadas zonas.
+  
+  Viento:
+  La velocidad del viento es la variable que muestra una relación más consistente con los avistamientos, con correlaciones positivas elevadas en prácticamente todas las subzonas y estaciones, alcanzando valores superiores a 0.8 en varios casos. Este resultado sugiere que el viento podría ser un factor relevante en la detección o comportamiento de la especie.
+  
+  Temperatura:
+  La temperatura media presenta correlaciones positivas moderadas, aunque con mayor variabilidad entre subzonas y estaciones. Esto indica que su influencia podría depender de condiciones locales específicas.
+  La temperatura máxima mantiene correlaciones positivas moderadas y consistentes
+  La temperatura mínima muestra mayor variabilidad, incluyendo correlaciones negativas
+Esto sugiere que los avistamientos están más relacionados con condiciones diurnas que nocturnas
+  
+  Precipitación:
+  La precipitación no muestra un patrón claro, alternando correlaciones positivas y negativas según la subzona y la estación. Esto sugiere una relación más débil o indirecta con los avistamientos.
+  
+  Conclusión:
+  En conjunto, los resultados confirman que la relación entre variables climáticas y avistamientos es altamente dependiente del contexto espacial, lo que justifica el análisis por subzonas en lugar de un enfoque global.
+
+#### ANÁLISIS DE LA DIRECCIÓN DEL VIENTO
+Como el viento dominantes no se le puede aplicar una correlación (magnitud con grado circular), convertimos el valor de viento dominante a componentes (variable numérica continua) para poder aplicar correlación:
+viento_x -> componente Este-Oeste
+viento_y -> componente Norte-Sur
+
+Como cualquier dirección se puede descomponer en eje horizontal (Este-Oeste), y eje vertical (Norte-Sur), por eso se le aplica cos() para conseguir el componente horizontal y sin() para el componente vertical.
+Norte-Sur -> cos() = 1/-1
+Este-Oeste -> sin() = 1/-1
+```{r}
+viento_dom <- quebr_plot %>%
+  mutate(
+    # convertimos los grados en radianes
+    viento_rad = wdir * pi / 180,
+    viento_x = cos(viento_rad),
+    viento_y = sin(viento_rad)
+  )
+cor(viento_dom$avistamientos, viento_dom$viento_x, use = "complete.obs")
+cor(viento_dom$avistamientos, viento_dom$viento_y, use = "complete.obs")
+
+```
+La dirección del viento fue transformada en sus componentes seno y coseno para tener en cuenta su naturaleza circular. Sin embargo, no se observaron correlaciones significativas con los avistamientos, por lo que esta variable no fue considerada en el análisis final.
+
+
+
+#### Gráfico de dispersión (scatterplot) con recta de regresión
+Vamos a realizar un enfoque solo a los variables tmean y wspeed, que representa una mayor correlación con el número de avistameintos de quebrantahuesos mediante un gráfico de dispersión en la que representa una recta roja de regresión lineal.
+```{r}
+quebr_plot %>%
+  ggplot(aes(x = tmean, y = avistamientos)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  facet_wrap(~ subzona_id)
+quebr_plot %>%
+  ggplot(aes(x = wspeed, y = avistamientos)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  facet_wrap(~ subzona_id)
+```
+
+  Los gráficos de dispersión muestran que la relación entre variables climáticas y número de avistamientos depende fuertemente de la subzona. Mientras que la temperatura media presenta relaciones positivas moderadas únicamente en algunas zonas, la velocidad del viento muestra una asociación positiva más clara y consistente, especialmente en aquellas subzonas con mayor variabilidad en los datos. En las zonas donde los avistamientos son bajos y poco variables, no se aprecian tendencias claras, lo que limita la capacidad de detectar relaciones significativas.
+
+#### Evolución temporal
+Realizemos un gráfico para representar la evolución temporal de la temperatura media, la velocidad de viento junto al número de avistamientos.
+```{r}
+# solo para zona 1
+quebr_plot %>%
+  filter(cluster == "1") %>%
+  group_by(year, subzona_id) %>%
+  summarise(
+    av = mean(avistamientos, na.rm = TRUE),
+    tm = mean(tmean, na.rm = TRUE),
+    ws = mean(wspeed, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    av_s = as.numeric(scale(av)),
+    tm_s = as.numeric(scale(tm)),
+    ws_s = as.numeric(scale(ws))
+  ) %>%
+  ggplot(aes(x = year)) +
+  geom_line(aes(y = av_s, color = "Avistamientos"), size = 1) +
+  geom_line(aes(y = tm_s, color = "Temp media"), size = 1) +
+  geom_line(aes(y = ws_s, color = "Velocidad viento"), size = 1) +
+  facet_wrap(~ subzona_id) +
+  labs(y = "Valores escalados", color = "Variable")
+
+```
+  En ciertas subzonas, se observa una tendencia creciente conjunta en la temperatura media, la velocidad del viento y el número de avistamientos. Este patrón, junto con los resultados de correlación previos, sugiere que el aumento en la velocidad del viento está asociado con un incremento en los avistamientos, mientras que la temperatura podría desempeñar un papel secundario.
+
+
+
+
 # ======================================================
 # OBJETIVO 4: Estudio de las variables biológicas
-# ======================================================
 
-
-### 1.Lectura
+## 1.Lectura
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
 ```{r}
 Cnj <- read.csv("cnj_cmn.csv", sep="\t", quote = "")
 
 ```
-### 2.Limpieza
+## 2.Limpieza
 ````{r}
 Cnj_clean <- Cnj[, c( 
   "decimalLatitude",
@@ -1968,7 +2134,7 @@ Cnj_clean %>% summarise(total_nas = sum(is.na(year)))
 Cnj_clean <- Cnj_clean[!is.na(Cnj_clean$year),]
 Cnj_clean %>% summarise(total_nas = sum(is.na(year)))
 ```
-#3.Clasificación geografica
+## 3.Clasificación geografica
 ```{r}
 library(dplyr)
 library(flexclust) # Nos ayudará a calcular las distancias rápidamente
@@ -1998,7 +2164,7 @@ Cnj_clean <- Cnj_clean %>%
   )
 ```
 
-#Comprobamos que la matriz de distancias esta bien construida
+Comprobamos que la matriz de distancias esta bien construida
 ```{r}
 ncol(dist_matrix)
 nrow(dist_matrix)
@@ -2006,20 +2172,20 @@ nrow(dist_matrix)
 
 
 
-#Una vez clasificados los conejos por zonas eliminamos todos los conejos que tienen número de cluster 0. Estos conejos no se encuentran en ninguna de las zonas que queremos estudiar.
+Una vez clasificados los conejos por zonas eliminamos todos los conejos que tienen número de cluster 0. Estos conejos no se encuentran en ninguna de las zonas que queremos estudiar.
 ```{r}
 Cnj_clean <- Cnj_clean %>% filter(cluster_zona!= 0)
 ```
-#¿Cuantas zonas distintas hay ?
+¿Cuantas zonas distintas hay ?
 ```{r}
 length(unique(Cnj_clean$cluster_zona))
 length(unique(lynx_obj1$cluster))
 unique(Cnj_clean$cluster_zona)
 unique(lynx_obj1$cluster)
 ```
-#Hay linces con cluster 0 porque el avistamiento se ha realizado fuera de zonas de alta densidad de población de linces. No obstante eliminamos el cluster 0 de los conejos porque no nos interesan los que están fuera de estas zonas para nuestro análisis ya que introducirian mucho ruido.
+Hay linces con cluster 0 porque el avistamiento se ha realizado fuera de zonas de alta densidad de población de linces. No obstante eliminamos el cluster 0 de los conejos porque no nos interesan los que están fuera de estas zonas para nuestro análisis ya que introducirian mucho ruido.
 
-#Una vez hemos asignado las zonas correspondientes a cada uno de los conejos vamos a construir unos nuevos datasets que separen a los animales por zonas -de la 1 a la 4-. Empezamos con los linces:
+Una vez hemos asignado las zonas correspondientes a cada uno de los conejos vamos a construir unos nuevos datasets que separen a los animales por zonas -de la 1 a la 4-. Empezamos con los linces:
 ```{r}
 lynx_Z1 <- lynx_obj1 %>% filter(cluster == 1)
 lynx_Z2 <- lynx_obj1 %>% filter(cluster == 2)
@@ -2029,7 +2195,7 @@ lynx_Z4 <- lynx_obj1 %>% filter(cluster == 4)
 #Creamos las de los linces y comprobamos que no se han perdido datos por el camino
 nrow(lynx_Z1) + nrow(lynx_Z2) + nrow(lynx_Z3) + nrow(lynx_Z4)
 ```
-#Continuamos con los conejos:
+Continuamos con los conejos:
 ```{r}
 cnj_Z1 <- Cnj_clean %>% filter(cluster_zona == 1)
 cnj_Z2 <- Cnj_clean %>% filter(cluster_zona == 2)
@@ -2038,9 +2204,9 @@ cnj_Z4 <- Cnj_clean %>% filter(cluster_zona == 4)
 nrow(cnj_Z1) + nrow(cnj_Z2) + nrow(cnj_Z3) + nrow(cnj_Z4)
 ```
 
-#4.Graficado
+##4.Graficado
 
-#Comenzamos a graficar, en primer lugar para hacer un análisis general, graficamos todos los avistamientos de linces y conejos a lo largo de los años en las zonas seleccionadas
+Comenzamos a graficar, en primer lugar para hacer un análisis general, graficamos todos los avistamientos de linces y conejos a lo largo de los años en las zonas seleccionadas
 ```{r}
 library(dplyr)
 library(ggplot2)
@@ -2123,6 +2289,7 @@ ggplot(datos_ancho, aes(x = year)) +
     plot.title = element_text(face = "bold", size = 14),
     legend.position = "bottom"
   )
+
 ```
 ```{r}
 library(dplyr)
@@ -2202,8 +2369,8 @@ ggplot(datos_zonas_ancho, aes(x = year)) +
     legend.position = "bottom"
   )
 ```
-#5. Ratio conejo/lince
-#Podemos sacar el ratio Conejo/Lince por zona
+##5. Ratio conejo/lince
+Podemos sacar el ratio Conejo/Lince por zona
 ```{r}
 # Calculamos el total de conejos y linces por zona y sacamos el ratio
 tabla_ratios <- datos_zonas_ancho %>%
@@ -2220,9 +2387,9 @@ tabla_ratios <- datos_zonas_ancho %>%
 print(tabla_ratios)
 ```
 
-#6.Análisis de correlación cruzada con desfase temporalç
+##6.Análisis de correlación cruzada con desfase temporal
 
-#Vemos la correlación de los avistamientos de conejos y linces pero con desfase temporal ya que los cambios en las poblaciones de conejos no tienen porqué verse reflejados en cambios poblacionales ese mismo año.
+Vemos la correlación de los avistamientos de conejos y linces pero con desfase temporal ya que los cambios en las poblaciones de conejos no tienen porqué verse reflejados en cambios poblacionales ese mismo año.
 ```{r}
 # Configuramos la pantalla para ver los 4 gráficos de correlación juntos (2 filas, 2 columnas)
 par(mfrow = c(2, 2))
@@ -2250,9 +2417,9 @@ ccf(z4_datos$Conejo, z4_datos$Lince, main = "Correlación Cruzada: Zona 4", lag.
 # Restauramos la configuración de pantalla de R por defecto
 par(mfrow = c(1, 1))
 ```
-#Quiza estaria bien hacer gráficas pero sumando años, es decir sumandoles a todos los linces un año para que asi podamos ver solapadas una población con otra
+Quiza estaria bien hacer gráficas pero sumando años, es decir sumandoles a todos los linces un año para que asi podamos ver solapadas una población con otra
 
-#Para hacer analisis de solapamiento estacional quitamos las filas en las que no existe dato de mes 
+Para hacer analisis de solapamiento estacional quitamos las filas en las que no existe dato de mes 
 ```{r}
 lynx_Z1_mes <- lynx_Z1 %>% filter(!is.na(month))
 lynx_Z2_mes <- lynx_Z2 %>% filter(!is.na(month))
@@ -2266,9 +2433,9 @@ cnj_Z4_mes <- cnj_Z4 %>% filter(!is.na(month))
 ```
 
 
-#7.Análisis de solapamiento estacional
+##7.Análisis de solapamiento estacional
 
-# Vamos a ver si los comportamientos de los conejos se solapan con los comportamientos del lince en cada una de las zonas, gracias a esto podremos saber si sus ritmos biológicos coinciden y si dependen el uno del otro.
+Vamos a ver si los comportamientos de los conejos se solapan con los comportamientos del lince en cada una de las zonas, gracias a esto podremos saber si sus ritmos biológicos coinciden y si dependen el uno del otro.
 ```{r}
 library(tidyr)
 library(ggplot2)
@@ -2347,16 +2514,16 @@ ggplot(datos_estacionales_grafico, aes(x = factor(month), y = Proporcion, fill =
 
 #Correlación de Pearson, con climatología
 ```
-#Podriamos investigar de que se esta alimentando el Lince en la zona dos que no es el conejo. En la zona uno la correlación es muy grande, los conejos son escasos o mas bien justos y no tienen los linces otra forma de comida de manera que se ven obligados a adaptarse a los patrones de los conejos. En la zona dos podemos ver que no hay correlacion entre los linces y los conejos, posiblemente esto se deba a que en estas zonas tal como sospechábamos el lince se alimenta de otros animales que no son los conejos. Casualmente tenemos pico de Linces en épocas de migración de aves. En la zona 3 lo que ocurre es que hay conejos de sobra, por tanto podemos concluir que habiendo tantísima comida el lince no se ve obligado como si ocurre en la zona 1 a adaptarse a los patrones del conejo, tambien podriamos pensar que igual que en la zona 2 existe una temporada en la que el lince no se alimenta de conejos si no de otras especies. Vemos ademas que hay un pico en verano, cuando las madres empiezan a salir con sus cachorros. En la zona 4 vemos un pico de actividad en el mes de febrero que es cuando buscan pareja. Aquí hay un solapamiento medio, quizá por falta de datos. 
+Podriamos investigar de que se esta alimentando el Lince en la zona dos que no es el conejo. En la zona uno la correlación es muy grande, los conejos son escasos o mas bien justos y no tienen los linces otra forma de comida de manera que se ven obligados a adaptarse a los patrones de los conejos. En la zona dos podemos ver que no hay correlacion entre los linces y los conejos, posiblemente esto se deba a que en estas zonas tal como sospechábamos el lince se alimenta de otros animales que no son los conejos. Casualmente tenemos pico de Linces en épocas de migración de aves. En la zona 3 lo que ocurre es que hay conejos de sobra, por tanto podemos concluir que habiendo tantísima comida el lince no se ve obligado como si ocurre en la zona 1 a adaptarse a los patrones del conejo, tambien podriamos pensar que igual que en la zona 2 existe una temporada en la que el lince no se alimenta de conejos si no de otras especies. Vemos ademas que hay un pico en verano, cuando las madres empiezan a salir con sus cachorros. En la zona 4 vemos un pico de actividad en el mes de febrero que es cuando buscan pareja. Aquí hay un solapamiento medio, quizá por falta de datos. 
 
 
 
 
 
 
-#8. Mapa de solapamiento
+##8. Mapa de solapamiento
 
-#Vamos a hacer un mapa de calor por densidad de kernel a ver si las poblaciones de linces se agrupan cerca de las poblaciones de conejos, a ver si encontramos algún dato interesante
+Vamos a hacer un mapa de calor por densidad de kernel a ver si las poblaciones de linces se agrupan cerca de las poblaciones de conejos, a ver si encontramos algún dato interesante
 
 ```{r}
 library(dplyr)
@@ -2423,4 +2590,6 @@ ggplot() +
   )
 ```
 
-#Los datos concuerdan con las hipotesis de las zonas.
+Los datos concuerdan con las hipotesis de las zonas.
+
+
