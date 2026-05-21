@@ -33,6 +33,7 @@ library(htmlwidgets)
 library(knitr)
 library(scales)
 library(plotly)
+library(geosphere)
 ```
 
 
